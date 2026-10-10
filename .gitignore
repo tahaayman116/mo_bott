@@ -1,0 +1,28 @@
+# Secrets & local state (NEVER commit these)
+.env
+*.session
+*.session-journal
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+data/
+logs/
+*.log
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.tmp
+*.bak

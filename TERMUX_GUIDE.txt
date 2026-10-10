@@ -1,0 +1,127 @@
+============================================================
+   Telegram Userbot — Termux (Android) First Run Guide
+   Tested on Termux app (Android 7+), same code as Windows.
+============================================================
+
+------------------------------------------------------------
+PREREQUISITES (install once)
+------------------------------------------------------------
+
+# 1. Install Termux (if not already)
+#   • Get it from F-Droid or GitHub releases (recommended) or Play Store.
+#   • Open Termux, grant storage permission if you want file access:
+#     termux-setup-storage   (accept prompts)
+
+# 2. Update & install Python
+pkg update && pkg upgrade -y
+pkg install python -y
+
+# 3. Install Telethon (specific version required)
+pip install telethon==1.45.0   # or: pip3 install telethon==1.45.0
+
+------------------------------------------------------------
+PREPARE ENVIRONMENT VARIABLES
+------------------------------------------------------------
+
+# 1. Copy example env file
+cd ~/.termux   # or just stay in your working folder
+cp /path/to/telegram-userbot/.env.example .env
+#   (If you cloned/forked the repo inside Termux, the path is:
+#    cd telegram-userbot && cp .env.example .env)
+
+# 2. Edit .env with your Telegram credentials
+#   You need: API_ID, API_HASH, PHONE
+#   Get API_ID & API_HASH from: https://my.telegram.org -> API Tools
+#   PHONE must include country code, e.g. +20123456789
+
+nano .env   # Termux text editor
+#   Or use any editor you like: vi, ed, etc.
+
+#   Required fields (others are optional, keep defaults):
+   API_ID=12345678          # integer, no quotes
+   API_HASH="your_api_hash_here"
+   PHONE="+20123456789"     # with plus sign
+
+#   Save & exit (Ctrl+O, Enter, Ctrl+X for nano)
+
+------------------------------------------------------------
+FIRST RUN (creates session & database)
+------------------------------------------------------------
+
+# 1. Navigate to the folder where you put the bot code
+#    Example (if you stored it in Downloads):
+cd ~/telegram-userbot   # or: cd /storage/downloads/telegram-userbot
+
+# 2. Run the bot
+python main.py
+
+# 2a. What happens:
+#   • Telethon will try to log in with your phone.
+#   • On first run it asks for a verification code (sent via SMS to your phone).
+#     Type the code when prompted and press Enter.
+#   • After successful login you’ll see:
+        "Authorized. Listening for new group messages... (Ctrl+C to stop safely)"
+
+# 2b. Files created automatically:
+    • telegram-userbot.session   (your client session – keep it!)
+    • data/userbot.db            (SQLite database)
+    • logs/                      (log folder, created if missing)
+
+------------------------------------------------------------
+USING THE BOT (recurring)
+------------------------------------------------------------
+
+After the first run, just re‑execute the same command:
+
+    python main.py
+
+# Sending commands (to Telegram Saved Messages – chat "me")
+#   All commands are SINGLE WORD – no !tg prefix needed.
+
+#   اوامر        → show help
+#   حالة         → status report
+#   انضم <لينك>  → preview group link, add to review queue (max 10)
+#   معلقة        → list pending join requests
+#   affirmed <n> → attempt one join (after review)
+#   الغي <n>     → cancel pending request
+#   تلقائي شغل/وقف → start/stop auto‑join every N minutes
+#   وقت <دقائق> → set pause between auto joins (1‑1440)
+#   حد <عدد>     → set daily join limit
+
+#   Examples:
+#     Send to Saved Messages:
+#       "انضم https://t.me/programminginc"
+#     Then:
+#       "أكد 1"   (to confirm the first pending request)
+
+------------------------------------------------------------
+QUICK TROUBLESHOOTING (Termux)
+------------------------------------------------------------
+
+• "Permission denied" or cannot write data/userbot.db:
+  Ensure you are in a writable folder. Termux home (~/) is writable by default.
+  If you stored the bot on shared storage, move it to internal storage:
+    mv /storage/downloads/telegram-userbot ~/.termux/ || cd ~/telegram-userbot
+
+• "Phone code not valid":
+  Double-check PHONE in .env includes country code (+20..., +966..., etc.).
+  The first run will ask for the SMS code – type it carefully.
+
+• Colors look weird or terminal not supporting ANSI:
+  The code uses colorama which auto‑fixes Termux terminal on import – no extra step needed.
+
+• Want to stop safely:
+  Press Ctrl+C in the Termux window.
+
+• Re‑run after changing .env:
+  Just run `python main.py` again – it reads the DB and .env each start.
+
+------------------------------------------------------------
+DONE! 
+------------------------------------------------------------
+   That’s all – install Python + Telethon, set .env, run `python main.py`,
+   then send group links from any group you manage to Saved Messages
+   and use the single‑word commands above.
+
+   Happy grouping! 🚀
+============================================================

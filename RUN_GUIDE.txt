@@ -1,0 +1,117 @@
+============================================================
+   Telegram Userbot — First Run & Recurring Steps
+   Tested on Windows PowerShell & Termux (Android)
+   Code is cross‑platform — same steps on both.
+============================================================
+
+------------------------------------------------------------
+STEP 1: Install Python & Telethon (once)
+------------------------------------------------------------
+
+# On Termux (Android):
+pkg update          # optional, refresh repos
+pkg install python  # installs Python 3.x
+pip install telethon==1.45.0   # or: pip3 install telethon==1.45.0
+
+# On Windows (PowerShell) — if not already done:
+# python already installed (3.13.7). Run:
+pip install telethon==1.45.0
+
+------------------------------------------------------------
+STEP 2: Prepare environment variables (once)
+------------------------------------------------------------
+
+1. Copy the example file:
+   copy .env.example .env   # Windows
+   # or on Termux:
+   cp .env.example .env
+
+2. Edit .env with your Telegram credentials:
+   nano .env   # or: edit .env with any text editor
+
+   Required fields (keep the rest as‑is):
+   API_ID=your_telegram_api_id          # get from my.telegram.org
+   API_HASH=your_telegram_api_hash      # get from my.telegram.org
+   PHONE=your_phone_with_country_code   # e.g. +20123456789
+
+   OPTIONAL (usually fine default):
+   CHANNEL_ID=
+   DB_PATH=data/userbot.db
+   LOG_LEVEL=INFO
+
+3. Save & exit.
+
+------------------------------------------------------------
+STEP 3: First run (creates session & database)
+------------------------------------------------------------
+
+# On either platform:
+python main.py
+
+# What happens:
+# - Telethon logs in with your phone (you’ll get an SMS code entered automatically if saved, otherwise type it).
+# - On first run it creates:
+    • telegram-userbot.session   (your client session)
+    • data/userbot.db            (SQLite database)
+    • logs/                      (log files, created if missing)
+# - After successful auth you’ll see:
+   "Authorized. Listening for new group messages... (Ctrl+C to stop safely)"
+
+------------------------------------------------------------
+STEP 4: Start using the bot (recurring)
+------------------------------------------------------------
+
+After the first run, just re‑execute the same command:
+
+# To start/continue listening:
+python main.py
+
+# Quick commands you can send to Saved Messages (single word, no !tg needed):
+#   اوامر        — show help
+#   حالة        — show status report
+#   انضم <لينك> — preview a group link, add to review queue
+#   معلقة       — list pending join requests
+#   أكد <رقم>   — attempt one join (after review)
+#   الغي <رقم>   — cancel a pending request
+#   تلقائي شغل/وقف — start/stop auto‑join every N minutes
+#   وقت <دقائق> — set pause between auto joins (1‑1440)
+#   حد <عدد>    — set daily join limit
+
+# Example:
+#   Send "انضمام https://t.me/programminginc" to Saved Messages
+#   Then "أكد 1" to confirm the first pending request.
+
+------------------------------------------------------------
+TROUBLESHOOTING (if something goes wrong)
+------------------------------------------------------------
+
+• "Permission denied" on data/userbot.db:
+  Ensure you have write permission in the folder. On Termux: chmod 755 . or run from a writable dir.
+
+• "Authorization phone code not valid":
+  Make sure PHONE in .env includes country code (e.g. +20...). The first run will ask for a code sent via SMS.
+
+• Colors look weird in Termux:
+  The code uses colorama which auto‑detects & fixes ANSI on import — no extra step needed.
+
+• Want to stop safely:
+  Press Ctrl+C in the terminal.
+
+------------------------------------------------------------
+QUICK REFERENCE CHEAT SHEET
+------------------------------------------------------------
+
+Command (in Saved Messages, no !tg prefix):
+  اوامر          → help
+  حالة           → status
+  انضم <url>     → preview + queue
+  معلقة          → pending list
+  أكد <id>       → try join
+  الغي <id>       → cancel
+  تلقائي شغل   → auto‑join on (interval from !tg وقت)
+  وقت <n>        → set interval (minutes)
+  حد <n>         → set daily max
+
+============================================================
+   That’s it — run once, then just `python main.py` each time.
+============================================================

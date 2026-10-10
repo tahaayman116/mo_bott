@@ -1,0 +1,24 @@
+TERMUX QUICK START — 5 STEPS ONLY
+
+1. Install
+   pkg install python
+   pip install telethon==1.45.0
+
+2. Prep env
+   cp .env.example .env
+   nano .env   # fill API_ID, API_HASH, PHONE (+country code)
+
+3. Run first time
+   python main.py
+   → type SMS code when asked
+
+4. Send links to Saved Messages
+   "انضم https://t.me/group1"
+   "أكد 1" (confirm)
+   "تلقائي شغل" (auto every minute)
+   "وقت 5" (interval)
+   "حد 10" (daily limit)
+
+5. Stop anytime: Ctrl+C
+
+DONE. Same code works Windows/Termux.
