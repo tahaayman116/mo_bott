@@ -21,11 +21,24 @@ import database
 PUBLIC_RE = re.compile(r"^t\.me/([A-Za-z][A-Za-z0-9_]{3,31})$", re.IGNORECASE)
 
 JOIN_LIMIT_DEFAULT = 10
-JOIN_LIMIT_MAX = 50
+JOIN_LIMIT_MAX = 500
+PREVIEW_LIST_MAX = 25
+MANUAL_BTNS_MAX = 40
 
 
 def clamp_join_limit(n: int) -> int:
     return max(1, min(JOIN_LIMIT_MAX, n))
+
+
+def merge_links(acc: list[str], new: list[str]) -> list[str]:
+    """Append new urls, de-duplicated (case-insensitive), order kept."""
+    seen = {u.lower() for u in acc}
+    out = list(acc)
+    for u in new:
+        if u.lower() not in seen:
+            seen.add(u.lower())
+            out.append(u)
+    return out
 
 
 def prepare_join_items(urls: list[str]) -> tuple[list[tuple[str, str, str]], int]:

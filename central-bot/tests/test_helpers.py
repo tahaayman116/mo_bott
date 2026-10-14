@@ -120,11 +120,13 @@ def test_format_links_block():
 
 
 def test_prepare_join_items_and_limit():
-    from join_flow import (JOIN_LIMIT_MAX, clamp_join_limit,
+    from join_flow import (JOIN_LIMIT_MAX, clamp_join_limit, merge_links,
                            prepare_join_items)
     assert clamp_join_limit(0) == 1
     assert clamp_join_limit(10) == 10
-    assert clamp_join_limit(999) == JOIN_LIMIT_MAX
+    assert clamp_join_limit(9999) == JOIN_LIMIT_MAX == 500
+    assert merge_links(["https://t.me/a"], ["https://t.me/A", "https://t.me/b"]) == [
+        "https://t.me/a", "https://t.me/b"]
     items, folders = prepare_join_items([
         "https://t.me/somegroup",
         "https://t.me/+AbCdEf123456",
@@ -148,3 +150,18 @@ def test_get_join_limit(tmp_path=None):
     assert get_join_limit(d) == 25
     database.kv_set(d, "join_limit", "junk")
     assert get_join_limit(d) == 10
+
+
+def test_big_list_preview_and_manual_rows():
+    from bot import build_join_preview, build_manual_rows
+    items = [(f"https://t.me/g{i:04d}", "public", f"g{i:04d}") for i in range(60)]
+    text, kb = build_join_preview(items, 0)
+    assert "60 لينك" in text
+    assert "كمان" in text  # summarized, not 60 lines
+    assert len(text) < 4096
+    rows = build_manual_rows(items)
+    ones = [r for r in rows if r[0].callback_data.startswith("j:one:")]
+    assert len(ones) == 40  # Telegram-safe button count
+    assert rows[-2][0].callback_data == "j:all"  # confirm-all covers everything
+    assert rows[0][0].callback_data == "j:one:0"
+    assert rows[40][0].callback_data == "j:noop"

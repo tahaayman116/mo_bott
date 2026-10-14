@@ -22,8 +22,9 @@ import database
 from broadcast_flow import BroadcastWorker, list_post_targets
 from collect_flow import collect_dialogs, format_links_block, save_and_format
 from helpers import chunk_text, extract_links, normalize_phone, parse_interval_minutes
-from join_flow import (JOIN_LIMIT_DEFAULT, JOIN_LIMIT_MAX, JoinQueue,
-                       attempt_join, clamp_join_limit, classify_link,
+from join_flow import (JOIN_LIMIT_DEFAULT, JOIN_LIMIT_MAX, MANUAL_BTNS_MAX,
+                       PREVIEW_LIST_MAX, JoinQueue, attempt_join,
+                       clamp_join_limit, classify_link, merge_links,
                        prepare_join_items)
 from session_manager import LoginError
 from telegram.error import Conflict, NetworkError, TimedOut
@@ -284,16 +285,19 @@ async def join_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     limit = get_join_limit(context.bot_data["db"])
     await q.edit_message_text(
-        f"🔗 ابعت اللينكات (الحد: {limit}):\n"
+        f"🔗 ابعت اللينكات على رسالة أو أكتر، ولما تخلص دوس تم (الحد: {limit}):\n"
         f"ابعت رقم 1-{JOIN_LIMIT_MAX} لوحده عشان تغير الحد.",
         reply_markup=cancel_kb())
     return ASK_LINKS
 
 
-async def show_join_preview_msg(message, items, folders):
+def build_join_preview(items, folders):
+    """Returns (text, keyboard). Long lists are summarized, never cut off."""
     lines = [f"🔍 لقيت {len(items)} لينك:"]
-    for i, (url, kind, _) in enumerate(items, 1):
+    for i, (url, kind, _) in enumerate(items[:PREVIEW_LIST_MAX], 1):
         lines.append(f"{i}. {url}")
+    if len(items) > PREVIEW_LIST_MAX:
+        lines.append(f"... و {len(items) - PREVIEW_LIST_MAX} كمان")
     if folders:
         lines.append(f"({folders} فولدر — يتفتح يدوي)")
     kb = InlineKeyboardMarkup([
@@ -301,7 +305,26 @@ async def show_join_preview_msg(message, items, folders):
          InlineKeyboardButton("✋ يدوي", callback_data="j:manual")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
     ])
-    await message.reply_text("\n".join(lines), reply_markup=kb)
+    return "\n".join(lines), kb
+
+
+def build_manual_rows(items):
+    rows = []
+    for i, (url, _, _) in enumerate(items[:MANUAL_BTNS_MAX]):
+        rows.append([InlineKeyboardButton(f"➕ انضم: {url[:40]}",
+                                          callback_data=f"j:one:{i}")])
+    if len(items) > MANUAL_BTNS_MAX:
+        rows.append([InlineKeyboardButton(
+            f"... و {len(items) - MANUAL_BTNS_MAX} كمان (تأكيد الكل يشملهم)",
+            callback_data="j:noop")])
+    rows.append([InlineKeyboardButton("✅ تأكيد الكل", callback_data="j:all")])
+    rows.append([InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")])
+    return rows
+
+
+async def show_join_preview_msg(message, items, folders):
+    text, kb = build_join_preview(items, folders)
+    await message.reply_text(text, reply_markup=kb)
 
 
 async def join_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,26 +342,46 @@ async def join_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "مفيش لينكات — ابعت لينكات t.me (أو رقم لتغيير الحد).")
         return ASK_LINKS
+    acc = merge_links(context.user_data.get("join_links_all", []), links)
+    context.user_data["join_links_all"] = acc
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ تم ({len(acc)} لينك)", callback_data="j:done")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
+    ])
+    await update.message.reply_text(
+        f"اتجمع {len(acc)} لينك — ابعت كمان أو دوس تم.", reply_markup=kb)
+    return ASK_LINKS
+
+
+async def join_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    db = context.bot_data["db"]
+    links = context.user_data.get("join_links_all", [])
+    if not links:
+        await q.answer("مفيش لينكات لسه — ابعت لينكات الأول.", show_alert=True)
+        return ASK_LINKS
     limit = get_join_limit(db)
     if len(links) > limit:
-        context.user_data["join_links_all"] = links
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"⬆️ خلي الحد {min(len(links), JOIN_LIMIT_MAX)} وكمل",
                                   callback_data=f"j:lim:{min(len(links), JOIN_LIMIT_MAX)}")],
             [InlineKeyboardButton(f"كمل بأول {limit} بس", callback_data="j:limkeep")],
             [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
         ])
-        await update.message.reply_text(
-            f"بعت {len(links)} لينك والحد الحالي {limit} — تحب إيه؟",
+        await q.edit_message_text(
+            f"جمعت {len(links)} لينك والحد الحالي {limit} — تحب إيه؟",
             reply_markup=kb)
         return ASK_LINKS
     items, folders = prepare_join_items(links)
+    context.user_data.pop("join_links_all", None)
     if not items:
-        await update.message.reply_text("مفيش لينكات صالحة (الفولدرات بتتفتح يدوي).",
-                                        reply_markup=menu_kb())
+        await q.edit_message_text("مفيش لينكات صالحة (الفولدرات بتتفتح يدوي).",
+                                  reply_markup=menu_kb())
         return ConversationHandler.END
     context.user_data["join_items"] = items
-    await show_join_preview_msg(update.message, items, folders)
+    text, kb = build_join_preview(items, folders)
+    await q.edit_message_text(text, reply_markup=kb)
     return ASK_JOIN_MODE
 
 
@@ -364,17 +407,8 @@ async def join_lim(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("مفيش لينكات صالحة.", reply_markup=menu_kb())
         return ConversationHandler.END
     context.user_data["join_items"] = items
-    lines = [f"🔍 لقيت {len(items)} لينك:"]
-    for i, (url, kind, _) in enumerate(items, 1):
-        lines.append(f"{i}. {url}")
-    if folders:
-        lines.append(f"({folders} فولدر — يتفتح يدوي)")
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ تلقائي بوقت", callback_data="j:auto"),
-         InlineKeyboardButton("✋ يدوي", callback_data="j:manual")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
-    ])
-    await q.edit_message_text("\n".join(lines), reply_markup=kb)
+    text, kb = build_join_preview(items, folders)
+    await q.edit_message_text(text, reply_markup=kb)
     return ASK_JOIN_MODE
 
 
@@ -383,15 +417,11 @@ async def join_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     if q.data == "j:manual":
         items = context.user_data.get("join_items", [])
-        rows = []
-        for i, (url, _, _) in enumerate(items):
-            rows.append([InlineKeyboardButton(f"➕ انضم: {url[:40]}",
-                                              callback_data=f"j:one:{i}")])
-        rows.append([InlineKeyboardButton("✅ تأكيد الكل", callback_data="j:all")])
-        rows.append([InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")])
-        await q.edit_message_text("دوس على كل لينك عشان تنضم:",
-                                  reply_markup=InlineKeyboardMarkup(rows))
-        context.user_data.clear()
+        await q.edit_message_text(f"دوس على كل لينك عشان تنضم ({len(items)}):",
+                                  reply_markup=InlineKeyboardMarkup(
+                                      build_manual_rows(items)))
+        # NOTE: keep join_items in user_data on purpose — j:one / j:all
+        # use them after this conversation ends.
         return ConversationHandler.END
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("1 دقيقة", callback_data="j:iv:1"),
@@ -442,6 +472,11 @@ async def start_join_queue(update, context, minutes: int, edit: bool):
         await update.callback_query.edit_message_text(txt, reply_markup=back_kb())
     else:
         await update.message.reply_text(txt, reply_markup=menu_kb())
+
+
+async def join_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("دول أول 40 — تأكيد الكل يشمل الليستة كلها.", show_alert=True)
 
 
 async def join_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -751,6 +786,7 @@ def build_app(cfg, sm) -> Application:
     join_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(join_start, pattern=r"^m:join$")],
         states={ASK_LINKS: [MessageHandler(filters.TEXT & ~filters.COMMAND, join_links),
+                              CallbackQueryHandler(join_done, pattern=r"^j:done$"),
                               CallbackQueryHandler(join_lim, pattern=r"^j:lim(:\d+|keep)$")],
                 ASK_JOIN_MODE: [CallbackQueryHandler(join_mode, pattern=r"^j:(auto|manual)$")],
                 ASK_JOIN_IV: [CallbackQueryHandler(join_iv_btn, pattern=r"^j:iv:\d+$"),
@@ -803,6 +839,7 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(CallbackQueryHandler(num_use, pattern=r"^n:use:"))
     app.add_handler(CallbackQueryHandler(num_del, pattern=r"^n:del:"))
     app.add_handler(CallbackQueryHandler(join_one, pattern=r"^j:one:\d+$"))
+    app.add_handler(CallbackQueryHandler(join_noop, pattern=r"^j:noop$"))
     app.add_handler(CallbackQueryHandler(join_all, pattern=r"^j:all$"))
     app.add_handler(CallbackQueryHandler(post_stop, pattern=r"^p:stop$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop)$"))
