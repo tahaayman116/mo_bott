@@ -121,7 +121,6 @@ done
   echo ""
   echo "DB_PATH=data/central.db"
   echo "SESSIONS_DIR=sessions"
-  echo "JOIN_DAILY_CAP=20"
   echo "POST_DAILY_CAP=100"
   echo "LOG_LEVEL=INFO"
 } > .env

@@ -142,10 +142,8 @@ class JoinQueue:
             if current != self.phone:
                 await self._notify("⏹ الرقم النشط اتغير — وقفت الانضمام.")
                 break
-            if database.counter_get(self.db_path, "joins") >= \
-                    int(database.kv_get(self.db_path, "join_cap", "20") or "20"):
-                await self._notify(f"وصلت للحد اليومي. ({ok}✅/{fail}❌)")
-                break
+            # No daily cap on joins (user's choice). FloodWait from Telegram
+            # still stops the queue. Attempts are still counted for status.
             try:
                 res = await attempt_join(client, kind, payload)
             except FloodWaitError as e:

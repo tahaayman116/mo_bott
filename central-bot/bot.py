@@ -504,10 +504,11 @@ async def post_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def groups_kb(targets: list, sel: set) -> InlineKeyboardMarkup:
     rows = []
-    for i, ent in enumerate(targets):
+    for i, (ent, can_post) in enumerate(targets):
         mark = "✅" if i in sel else "⬜"
-        title = (getattr(ent, "title", "") or "?")[:32]
-        rows.append([InlineKeyboardButton(f"{mark} {title}",
+        lock = "" if can_post else "🔇"
+        title = (getattr(ent, "title", "") or "?")[:28]
+        rows.append([InlineKeyboardButton(f"{mark}{lock} {title}",
                                           callback_data=f"p:t:{i}")])
     rows.append([InlineKeyboardButton("✅ الكل", callback_data="p:all"),
                  InlineKeyboardButton("⬜ مسح", callback_data="p:none")])
@@ -517,8 +518,10 @@ def groups_kb(targets: list, sel: set) -> InlineKeyboardMarkup:
 
 
 def groups_text(targets: list, sel: set, minutes: int) -> str:
-    return (f"📢 اختار الجروبات ({len(sel)} من {len(targets)}) — كل {minutes} دقيقة:\n"
-            "دوس على الجروب عشان تشيل/ترجع علامته.")
+    n_no_post = sum(1 for _, c in targets if not c)
+    extra = f"\n🔇 = قناة مش أدمن فيها (هتتخطى)." if n_no_post else ""
+    return (f"📢 اختار الشاتات ({len(sel)} من {len(targets)}) — كل {minutes} دقيقة:\n"
+            f"دوس على الشات عشان تشيل/ترجع علامته.{extra}")
 
 
 async def show_group_select(update, context, minutes: int, edit: bool):
@@ -613,7 +616,7 @@ async def post_begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⏹ إيقاف النشر", callback_data="p:stop")],
         [InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")],
     ])
-    await q.edit_message_text(f"📢 شغال (#{bid}): {len(targets)} جروب كل {minutes} دقيقة.",
+    await q.edit_message_text(f"📢 شغال (#{bid}): {len(targets)} شات كل {minutes} دقيقة.",
                               reply_markup=kb)
     return ConversationHandler.END
 
@@ -647,7 +650,6 @@ def build_app(cfg, sm) -> Application:
     global OWNER
     OWNER = cfg.owner_id
     database.init_db(cfg.db_path)
-    database.kv_set(cfg.db_path, "join_cap", str(cfg.join_daily_cap))
     database.kv_set(cfg.db_path, "post_cap", str(cfg.post_daily_cap))
 
     app = (Application.builder().token(cfg.bot_token)

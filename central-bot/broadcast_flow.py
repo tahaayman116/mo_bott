@@ -25,15 +25,30 @@ def describe_send_error(e: Exception) -> str:
     return type(e).__name__ or "فشل"
 
 
-async def list_post_targets(client) -> list:
-    """Groups (and small chats) the account can likely post in."""
+def _can_post(ent) -> bool:
+    """Broadcast channels need admin post rights; groups are assumed postable
+    (real failures still surface per-target at send time)."""
+    if isinstance(ent, Chat):
+        return True
+    if isinstance(ent, Channel):
+        if getattr(ent, "megagroup", False):
+            return True
+        if getattr(ent, "creator", False):
+            return True
+        rights = getattr(ent, "admin_rights", None)
+        if rights and getattr(rights, "post_messages", False):
+            return True
+        return False
+    return False
+
+
+async def list_post_targets(client) -> list[tuple]:
+    """ALL chats: groups + channels. Each item is (entity, can_post)."""
     targets = []
     async for dlg in client.iter_dialogs():
         ent = dlg.entity
-        if isinstance(ent, Chat):
-            targets.append(ent)
-        elif isinstance(ent, Channel) and getattr(ent, "megagroup", False):
-            targets.append(ent)
+        if isinstance(ent, (Chat, Channel)):
+            targets.append((ent, _can_post(ent)))
     return targets
 
 
@@ -76,11 +91,11 @@ class BroadcastWorker:
             await self._notify(f"مش قادر أوصل ({e}).")
             return
         cap = int(database.kv_get(self.db_path, "post_cap", "100") or "100")
-        ok = fail = 0
+        ok = fail = skip = 0
         total = len(targets)
         results: list[str] = []
-        await self._notify(f"📢 بدأت: {total} جروب كل {interval_min} دقيقة.")
-        for i, ent in enumerate(targets, 1):
+        await self._notify(f"📢 بدأت: {total} شات كل {interval_min} دقيقة.")
+        for i, (ent, can_post) in enumerate(targets, 1):
             if self._stop.is_set():
                 break
             # Enforce single-number operation: stop if the active number changed.
@@ -97,6 +112,10 @@ class BroadcastWorker:
                 await self._notify(f"وصلت للحد اليومي ({cap}).")
                 break
             title = (getattr(ent, "title", "") or "?")[:30]
+            if not can_post:
+                skip += 1
+                results.append(f"{i}. ⏭️ {title}: مش أدمن (تخطي)")
+                continue
             try:
                 await client.send_message(ent, text)
                 ok += 1
@@ -121,7 +140,7 @@ class BroadcastWorker:
         status = "stopped" if self._stop.is_set() else "done"
         database.update_broadcast(self.db_path, bid, status=status,
                                   done_ok=ok, done_fail=fail)
-        report = f"🏁 النشر خلص: {ok}✅ {fail}❌ من {total}."
+        report = f"🏁 النشر خلص: {ok}✅ {fail}❌ {skip}⏭️ من {total}."
         if results:
-            report += "\n" + "\n".join(results[:10])
+            report += "\n" + "\n".join(results[:12])
         await self._notify(report)

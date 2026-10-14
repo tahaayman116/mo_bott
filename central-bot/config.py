@@ -25,7 +25,6 @@ class AppConfig:
     owner_id: int
     db_path: Path
     sessions_dir: Path
-    join_daily_cap: int
     post_daily_cap: int
     log_level: str
     project_root: Path
@@ -96,7 +95,6 @@ def load_config(env_path: Path | None = None, root: Path | None = None) -> AppCo
         owner_id=owner_id,
         db_path=db_path,
         sessions_dir=sessions_dir,
-        join_daily_cap=_int("JOIN_DAILY_CAP", 20),
         post_daily_cap=_int("POST_DAILY_CAP", 100),
         log_level=(_get("LOG_LEVEL") or "INFO").strip().upper() or "INFO",
         project_root=base,
