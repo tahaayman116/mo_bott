@@ -22,7 +22,9 @@ import database
 from broadcast_flow import BroadcastWorker, list_post_targets
 from collect_flow import collect_dialogs, format_links_block, save_and_format
 from helpers import chunk_text, extract_links, normalize_phone, parse_interval_minutes
-from join_flow import JoinQueue, attempt_join, classify_link
+from join_flow import (JOIN_LIMIT_DEFAULT, JOIN_LIMIT_MAX, JoinQueue,
+                       attempt_join, clamp_join_limit, classify_link,
+                       prepare_join_items)
 from session_manager import LoginError
 from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.request import HTTPXRequest
@@ -269,32 +271,97 @@ def cancel_kb() -> InlineKeyboardMarkup:
 
 
 # ---------- join flow ----------
+def get_join_limit(db) -> int:
+    try:
+        return clamp_join_limit(int(database.kv_get(db, "join_limit",
+                                                    str(JOIN_LIMIT_DEFAULT))))
+    except ValueError:
+        return JOIN_LIMIT_DEFAULT
+
+
 async def join_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.edit_message_text("🔗 ابعت اللينكات اللي عايز تنضم لها (لحد 10):",
-                              reply_markup=cancel_kb())
+    limit = get_join_limit(context.bot_data["db"])
+    await q.edit_message_text(
+        f"🔗 ابعت اللينكات (الحد: {limit}):\n"
+        f"ابعت رقم 1-{JOIN_LIMIT_MAX} لوحده عشان تغير الحد.",
+        reply_markup=cancel_kb())
     return ASK_LINKS
 
 
+async def show_join_preview_msg(message, items, folders):
+    lines = [f"🔍 لقيت {len(items)} لينك:"]
+    for i, (url, kind, _) in enumerate(items, 1):
+        lines.append(f"{i}. {url}")
+    if folders:
+        lines.append(f"({folders} فولدر — يتفتح يدوي)")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ تلقائي بوقت", callback_data="j:auto"),
+         InlineKeyboardButton("✋ يدوي", callback_data="j:manual")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
+    ])
+    await message.reply_text("\n".join(lines), reply_markup=kb)
+
+
 async def join_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    links = extract_links(update.message.text or "")[:10]
+    db = context.bot_data["db"]
+    text = update.message.text or ""
+    links = extract_links(text)
     if not links:
-        await update.message.reply_text("مفيش لينكات — ابعت لينكات t.me.")
+        # lone number = change the limit freely
+        n = parse_interval_minutes(text)
+        if n is not None and 1 <= n <= JOIN_LIMIT_MAX:
+            database.kv_set(db, "join_limit", str(n))
+            await update.message.reply_text(
+                f"✅ حد اللينكات بقى {n} — ابعت اللينكات دلوقتي.")
+        else:
+            await update.message.reply_text(
+                "مفيش لينكات — ابعت لينكات t.me (أو رقم لتغيير الحد).")
         return ASK_LINKS
-    items: list[tuple[str, str, str]] = []  # (url, kind, payload)
-    folders = 0
-    for url in links:
-        kind, payload = classify_link(url)
-        if kind == "folder":
-            folders += 1
-            continue
-        if kind == "unsupported":
-            continue
-        items.append((url, kind, payload))
+    limit = get_join_limit(db)
+    if len(links) > limit:
+        context.user_data["join_links_all"] = links
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⬆️ خلي الحد {min(len(links), JOIN_LIMIT_MAX)} وكمل",
+                                  callback_data=f"j:lim:{min(len(links), JOIN_LIMIT_MAX)}")],
+            [InlineKeyboardButton(f"كمل بأول {limit} بس", callback_data="j:limkeep")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
+        ])
+        await update.message.reply_text(
+            f"بعت {len(links)} لينك والحد الحالي {limit} — تحب إيه؟",
+            reply_markup=kb)
+        return ASK_LINKS
+    items, folders = prepare_join_items(links)
     if not items:
         await update.message.reply_text("مفيش لينكات صالحة (الفولدرات بتتفتح يدوي).",
                                         reply_markup=menu_kb())
+        return ConversationHandler.END
+    context.user_data["join_items"] = items
+    await show_join_preview_msg(update.message, items, folders)
+    return ASK_JOIN_MODE
+
+
+async def join_lim(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    db = context.bot_data["db"]
+    data = q.data or ""
+    links = context.user_data.pop("join_links_all", [])
+    if data.startswith("j:lim:"):
+        try:
+            n = clamp_join_limit(int(data.split("j:lim:")[-1]))
+        except ValueError:
+            n = get_join_limit(db)
+        database.kv_set(db, "join_limit", str(n))
+        await q.edit_message_text(f"✅ الحد بقى {n} — دي اللينكات:")
+    else:  # j:limkeep
+        n = get_join_limit(db)
+        links = links[:n]
+        await q.edit_message_text("تمام — هكمل بالعدد المحدود:")
+    items, folders = prepare_join_items(links)
+    if not items:
+        await q.edit_message_text("مفيش لينكات صالحة.", reply_markup=menu_kb())
         return ConversationHandler.END
     context.user_data["join_items"] = items
     lines = [f"🔍 لقيت {len(items)} لينك:"]
@@ -307,7 +374,7 @@ async def join_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("✋ يدوي", callback_data="j:manual")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
     ])
-    await update.message.reply_text("\n".join(lines), reply_markup=kb)
+    await q.edit_message_text("\n".join(lines), reply_markup=kb)
     return ASK_JOIN_MODE
 
 
@@ -683,7 +750,8 @@ def build_app(cfg, sm) -> Application:
 
     join_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(join_start, pattern=r"^m:join$")],
-        states={ASK_LINKS: [MessageHandler(filters.TEXT & ~filters.COMMAND, join_links)],
+        states={ASK_LINKS: [MessageHandler(filters.TEXT & ~filters.COMMAND, join_links),
+                              CallbackQueryHandler(join_lim, pattern=r"^j:lim(:\d+|keep)$")],
                 ASK_JOIN_MODE: [CallbackQueryHandler(join_mode, pattern=r"^j:(auto|manual)$")],
                 ASK_JOIN_IV: [CallbackQueryHandler(join_iv_btn, pattern=r"^j:iv:\d+$"),
                               MessageHandler(filters.TEXT & ~filters.COMMAND, join_iv_msg)]},

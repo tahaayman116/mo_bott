@@ -117,3 +117,34 @@ def test_format_links_block():
     assert format_links_block([{"link": ""}]) == []
     many = [{"link": f"https://t.me/g{i:04d}"} for i in range(500)]
     assert len(format_links_block(many)) > 1
+
+
+def test_prepare_join_items_and_limit():
+    from join_flow import (JOIN_LIMIT_MAX, clamp_join_limit,
+                           prepare_join_items)
+    assert clamp_join_limit(0) == 1
+    assert clamp_join_limit(10) == 10
+    assert clamp_join_limit(999) == JOIN_LIMIT_MAX
+    items, folders = prepare_join_items([
+        "https://t.me/somegroup",
+        "https://t.me/+AbCdEf123456",
+        "https://t.me/addlist/AbCdEf",
+        "https://google.com/x",
+    ])
+    assert len(items) == 2
+    assert folders == 1
+    assert items[0][:2] == ("https://t.me/somegroup", "public")
+
+
+def test_get_join_limit(tmp_path=None):
+    import tempfile
+    from pathlib import Path
+    import database
+    from bot import get_join_limit
+    d = Path(tempfile.mkdtemp()) / "t.db"
+    database.init_db(d)
+    assert get_join_limit(d) == 10  # default
+    database.kv_set(d, "join_limit", "25")
+    assert get_join_limit(d) == 25
+    database.kv_set(d, "join_limit", "junk")
+    assert get_join_limit(d) == 10

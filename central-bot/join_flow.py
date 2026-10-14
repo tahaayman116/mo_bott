@@ -20,6 +20,31 @@ import database
 
 PUBLIC_RE = re.compile(r"^t\.me/([A-Za-z][A-Za-z0-9_]{3,31})$", re.IGNORECASE)
 
+JOIN_LIMIT_DEFAULT = 10
+JOIN_LIMIT_MAX = 50
+
+
+def clamp_join_limit(n: int) -> int:
+    return max(1, min(JOIN_LIMIT_MAX, n))
+
+
+def prepare_join_items(urls: list[str]) -> tuple[list[tuple[str, str, str]], int]:
+    """Classify + filter raw urls. Returns (items, folder_count).
+
+    items: list of (url, kind, payload), folders/unsupported skipped.
+    """
+    items: list[tuple[str, str, str]] = []
+    folders = 0
+    for url in urls:
+        kind, payload = classify_link(url)
+        if kind == "folder":
+            folders += 1
+            continue
+        if kind == "unsupported":
+            continue
+        items.append((url, kind, payload))
+    return items, folders
+
 
 def classify_link(url: str) -> tuple[str, str]:
     """Return (kind, payload). kinds: public, invite, folder, unsupported."""
