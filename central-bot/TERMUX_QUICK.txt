@@ -1,0 +1,32 @@
+CENTRAL BOT — TERMUX QUICK START (5 STEPS)
+
+1. Install
+   pkg install python -y
+   pip install -r requirements.txt
+
+2. Clone + env
+   git clone <repo-url>
+   cd central-bot
+   cp .env.example .env
+   nano .env
+   # API_ID + API_HASH (my.telegram.org/apps)
+   # CONTROL_BOT_TOKEN (@BotFather -> New Bot)
+   # OWNER_ID (@userinfobot -> your numeric id)
+
+3. Run
+   python main.py
+   # open your control bot, send /start
+
+4. Use buttons
+   الارقام -> اضافة رقم -> send phone -> send SMS code
+   (tap number to switch active)
+   انضم -> send links -> تلقائي + وقت / يدوي
+   تجميع -> send any saved number
+   نشر -> send text -> every X min -> ابدأ
+
+5. Keep alive
+   termux-wake-lock
+   nohup python main.py > bot.log 2>&1 &
+   Stop: pkill -f main.py  (or القايمة -> إيقاف الكل)
+
+DONE. One active session at a time = light on battery/RAM.
