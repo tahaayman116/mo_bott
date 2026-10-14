@@ -20,7 +20,7 @@ from telegram.ext import (
 
 import database
 from broadcast_flow import BroadcastWorker, list_post_targets
-from collect_flow import collect_dialogs, save_and_format
+from collect_flow import collect_dialogs, format_links_block, save_and_format
 from helpers import chunk_text, extract_links, normalize_phone, parse_interval_minutes
 from join_flow import JoinQueue, attempt_join, classify_link
 from session_manager import LoginError
@@ -452,7 +452,14 @@ async def collect_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     for chunk in save_and_format(db, phone, items):
         await update.message.reply_text(chunk)
-    await update.message.reply_text("خلص ✅", reply_markup=menu_kb())
+    blocks = format_links_block(items)
+    if blocks:
+        await update.message.reply_text(
+            f"📋 {len([i for i in items if i.get('link')])} رابط جاهز — دوس على المربع وانسخ الكل:")
+        for b in blocks:
+            await update.message.reply_text(b, parse_mode="Markdown")
+    await update.message.reply_text("خلص ✅ — الزق اللي نسخته في ➕ انضم.",
+                                    reply_markup=menu_kb())
     return ConversationHandler.END
 
 

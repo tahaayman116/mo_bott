@@ -56,3 +56,25 @@ def format_collect(phone: str, items: list[dict]) -> list[str]:
 def save_and_format(db_path, phone: str, items: list[dict]) -> list[str]:
     database.save_collected(db_path, phone, items)
     return format_collect(phone, items)
+
+
+def format_links_block(items: list[dict]) -> list[str]:
+    """All public links as copy-friendly code blocks (tap -> copy on mobile).
+
+    Returns [] when there is nothing public to copy.
+    """
+    links = [i["link"] for i in items if i.get("link")]
+    if not links:
+        return []
+    blocks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for link in links:
+        if cur_len + len(link) + 1 > 3900 and cur:
+            blocks.append("```\n" + "\n".join(cur) + "\n```")
+            cur, cur_len = [], 0
+        cur.append(link)
+        cur_len += len(link) + 1
+    if cur:
+        blocks.append("```\n" + "\n".join(cur) + "\n```")
+    return blocks

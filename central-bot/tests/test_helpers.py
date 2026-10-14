@@ -102,3 +102,18 @@ def test_describe_send_error():
     assert "بطيء" in describe_send_error(slow)
     forb = type("ChatWriteForbiddenError", (Exception,), {})("x")
     assert "مقفول" in describe_send_error(forb)
+
+
+def test_format_links_block():
+    from collect_flow import format_links_block
+    items = [{"kind": "جروب", "title": "A", "link": "https://t.me/a"},
+             {"kind": "جروب", "title": "B", "link": ""},
+             {"kind": "قناة", "title": "C", "link": "https://t.me/c"}]
+    blocks = format_links_block(items)
+    assert len(blocks) == 1
+    assert "https://t.me/a" in blocks[0]
+    assert "https://t.me/c" in blocks[0]
+    assert blocks[0].startswith("```")
+    assert format_links_block([{"link": ""}]) == []
+    many = [{"link": f"https://t.me/g{i:04d}"} for i in range(500)]
+    assert len(format_links_block(many)) > 1
