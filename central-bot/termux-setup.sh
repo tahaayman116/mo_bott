@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Central Bot — one-command Termux setup (client-proof).
 # Run this single line on a fresh Termux:
-#   curl -fsSL https://raw.githubusercontent.com/tahaayman116/mo_bott/main/central-bot/termux-setup.sh | bash
+#   pkg install -y curl && curl -fsSL -o setup.sh https://raw.githubusercontent.com/tahaayman116/mo_bott/main/central-bot/termux-setup.sh && bash setup.sh
 set -u
 
 REPO_URL="https://github.com/tahaayman116/mo_bott.git"
@@ -9,6 +9,9 @@ SUBDIR="central-bot"
 
 say() { printf '%s\n' "$*"; }
 ask() { printf '%s ' "$*"; }
+# NOTE: always read from /dev/tty (the keyboard), never stdin:
+# the script may arrive via a pipe and stdin would be the download, not you.
+tty_read() { read -r "$1" < /dev/tty; }
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -67,7 +70,7 @@ fi
 API_ID=""
 while :; do
   ask "API_ID (أرقام من my.telegram.org/apps):"
-  read -r API_ID
+  tty_read API_ID
   case "$API_ID" in
     ''|*[!0-9]*)
       say "لازم أرقام بس. حاول تاني."
@@ -79,7 +82,7 @@ done
 API_HASH=""
 while :; do
   ask "API_HASH (حروف من نفس الصفحة):"
-  read -r API_HASH
+  tty_read API_HASH
   if [ "${#API_HASH}" -lt 10 ]; then
     say "قصير أوي. انسخه كامل وحاول تاني."
   else
@@ -90,7 +93,7 @@ done
 TOKEN=""
 while :; do
   ask "توكن البوت (من @BotFather بعد /newbot):"
-  read -r TOKEN
+  tty_read TOKEN
   case "$TOKEN" in
     *:*????????*) break ;;
     *) say "التوكن شكله رقم:حروف. حاول تاني." ;;
@@ -100,7 +103,7 @@ done
 OWNER=""
 while :; do
   ask "رقمك العددي (من @userinfobot):"
-  read -r OWNER
+  tty_read OWNER
   case "$OWNER" in
     ''|*[!0-9]*)
       say "لازم أرقام بس. حاول تاني."
