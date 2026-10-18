@@ -47,29 +47,34 @@ if [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ] \
   fi
 fi
 # Download the code (tarball — no git needed, more reliable on Termux)
-if [ ! -f "$BASE/$SUBDIR/main.py" ]; then
-  say "[2/5] تحميل الكود..."
-  rm -rf "$BASE" /tmp/mo_bott_dl
-  mkdir -p /tmp/mo_bott_dl "$BASE/$SUBDIR"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o /tmp/mo_bott_dl/repo.tar.gz \
-      "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
-  else
-    wget -q -O /tmp/mo_bott_dl/repo.tar.gz \
-      "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
-  fi
-  if [ ! -s /tmp/mo_bott_dl/repo.tar.gz ]; then
-    say "فشل التحميل — تحقق من النت."
-    exit 1
-  fi
+# Always attempt fresh download so fixes propagate; fall back to existing on failure.
+say "[2/5] تحميل/تحديث الكود..."
+rm -rf /tmp/mo_bott_dl
+mkdir -p /tmp/mo_bott_dl
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL -o /tmp/mo_bott_dl/repo.tar.gz \
+    "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
+elif command -v wget >/dev/null 2>&1; then
+  wget -q -O /tmp/mo_bott_dl/repo.tar.gz \
+    "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
+fi
+if [ -s /tmp/mo_bott_dl/repo.tar.gz ]; then
   tar -xzf /tmp/mo_bott_dl/repo.tar.gz -C /tmp/mo_bott_dl
   extracted=$(find /tmp/mo_bott_dl -maxdepth 2 -type d -name "central-bot" | head -1)
-  if [ -z "$extracted" ] || [ ! -f "$extracted/main.py" ]; then
-    say "فشل استخراج الكود."
-    exit 1
+  if [ -n "$extracted" ] && [ -f "$extracted/main.py" ]; then
+    mkdir -p "$BASE/$SUBDIR"
+    cp -r "$extracted/." "$BASE/$SUBDIR/"
+    rm -rf /tmp/mo_bott_dl
+    say "تم تحديث الكود ✅"
+  else
+    say "فشل استخراج الكود — استخدم النسخة الموجودة."
   fi
-  cp -r "$extracted/." "$BASE/$SUBDIR/"
-  rm -rf /tmp/mo_bott_dl
+else
+  say "فشل التحميل — استخدم النسخة الموجودة (إن وجدت)."
+fi
+if [ ! -f "$BASE/$SUBDIR/main.py" ]; then
+  say "لا يوجد كود — تحقق من النت."
+  exit 1
 fi
 cd "$BASE/$SUBDIR" || { say "تعذر الدخول للمجلد."; exit 1; }
 say "[2/5] تحديث الكود (git pull)..."
