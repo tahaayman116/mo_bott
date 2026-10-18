@@ -12,10 +12,14 @@ import database
 from helpers import chunk_text
 
 
-async def collect_dialogs(client) -> list[dict]:
+async def collect_dialogs(client, on_progress=None) -> list[dict]:
     items: list[dict] = []
+    n = 0
     async for dlg in client.iter_dialogs():
         ent = dlg.entity
+        n += 1
+        if on_progress is not None and n % 50 == 0:
+            await on_progress(n)
         if isinstance(ent, Channel):
             kind = "قناة" if getattr(ent, "broadcast", False) else "جروب"
         elif isinstance(ent, Chat):

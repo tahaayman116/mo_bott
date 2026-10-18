@@ -152,6 +152,23 @@ def test_get_join_limit(tmp_path=None):
     assert get_join_limit(d) == 10
 
 
+def test_progress_callback_in_collect():
+    import asyncio
+    from collect_flow import collect_dialogs
+
+    class FakeDlg:
+        entity = None
+    class FakeClient:
+        async def iter_dialogs(self):
+            for _ in range(120):
+                yield FakeDlg()
+    seen: list[int] = []
+    async def on_prog(n):
+        seen.append(n)
+    items = asyncio.run(collect_dialogs(FakeClient(), on_progress=on_prog))
+    assert items == []
+    assert seen == [50, 100]
+
 def test_big_list_preview_and_manual_rows():
     from bot import build_join_preview, build_manual_rows
     items = [(f"https://t.me/g{i:04d}", "public", f"g{i:04d}") for i in range(60)]

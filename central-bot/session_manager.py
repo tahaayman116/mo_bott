@@ -54,7 +54,21 @@ class SessionManager:
 
     def _new_client(self, phone: str) -> TelegramClient:
         return TelegramClient(str(self.session_path(phone).with_suffix("")),
-                              self.api_id, self.api_hash)
+                              self.api_id, self.api_hash,
+                              request_retries=4, connection_retries=4,
+                              retry_delay=2, timeout=20)
+
+    @staticmethod
+    async def _connect(client: TelegramClient) -> None:
+        """connect() with a hard cap so slow networks fail instead of hang."""
+        try:
+            await asyncio.wait_for(client.connect(), timeout=30)
+        except (asyncio.TimeoutError, TimeoutError):
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise LoginError("الشبكة بطيئة والاتصال مقفش — جرب تاني أو غير النت.")
 
     # ---- login flow ----
     async def start_login(self, phone: str) -> str:
@@ -184,7 +198,7 @@ class SessionManager:
                 self._active_client = None
             client = self._new_client(phone)
             try:
-                await client.connect()
+                await self._connect(client)
                 if not await client.is_user_authorized():
                     raise LoginError("الجلسة انتهت — امسح الرقم وسجّله تاني.")
                 me = await client.get_me()
@@ -254,7 +268,7 @@ class SessionManager:
             raise LoginError("الرقم ده مش متسجل.")
         client = self._new_client(phone)
         try:
-            await client.connect()
+            await self._connect(client)
             if not await client.is_user_authorized():
                 raise LoginError("الجلسة انتهت — امسح الرقم وسجّله تاني.")
             yield client

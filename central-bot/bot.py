@@ -5,7 +5,9 @@ Nobody except OWNER_ID gets any reply (silently ignored + logged).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -322,11 +324,6 @@ def build_manual_rows(items):
     return rows
 
 
-async def show_join_preview_msg(message, items, folders):
-    text, kb = build_join_preview(items, folders)
-    await message.reply_text(text, reply_markup=kb)
-
-
 async def join_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     text = update.message.text or ""
@@ -504,22 +501,39 @@ async def join_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def join_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    sm = context.bot_data["sm"]
-    items = context.user_data.pop("join_items", [])
+    items = context.user_data.get("join_items", [])
+    context.user_data.pop("join_items", None)
+    if not items:
+        await q.edit_message_text("ماشي — راجع القايمة.", reply_markup=back_kb())
+        return
+    await q.edit_message_text(
+        f"⏳ جارى الانضمام لـ {len(items)} لينك… هبعتلك النتيجة لما يخلص.")
+    asyncio.create_task(join_all_job(context.bot_data, context.bot,
+                                     update.effective_chat.id, items))
+
+
+async def join_all_job(bot_data: dict, bot, chat_id: int,
+                       items: list) -> None:
     try:
-        _, client = await sm.ensure_active()
+        _, client = await bot_data["sm"].ensure_active()
     except LoginError as e:
-        await q.edit_message_text(f"❌ {e}", reply_markup=back_kb())
+        await send_bg(bot, chat_id, f"❌ {e}", back_kb())
         return
     ok = 0
-    for _, kind, payload in items:
+    n = len(items)
+    last = {"t": 0.0}
+    for idx, (_, kind, payload) in enumerate(items, 1):
         try:
             if await attempt_join(client, kind, payload) == "done":
                 ok += 1
         except Exception:
             pass
-        database.counter_inc(context.bot_data["db"], "joins")
-    await q.edit_message_text(f"🏁 {ok}✅ من {len(items)}.", reply_markup=back_kb())
+        database.counter_inc(bot_data["db"], "joins")
+        now = time.monotonic()
+        if idx < n and now - last["t"] >= 10:
+            last["t"] = now
+            await send_bg(bot, chat_id, f"⏳ {idx}/{n} خلصو ({ok} ✅)…")
+    await send_bg(bot, chat_id, f"🏁 {ok}✅ من {n}.", back_kb())
 
 
 # ---------- collect flow ----------
@@ -539,30 +553,76 @@ async def collect_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phone:
         await update.message.reply_text("الرقم غلط — مثال: +201012345678")
         return ASK_COLLECT_PHONE
-    sm = context.bot_data["sm"]
-    db = context.bot_data["db"]
-    await update.message.reply_text("⏳ بجمع...")
+    chat_id = update.effective_chat.id
+    asyncio.create_task(collect_job(context.bot_data, context.bot, chat_id, phone))
+    await update.message.reply_text(
+        "🚀 شغلنا التجميع في الخلفية — الأزرار مش هتقعد تدور، والنتيجة هتجي برسايل.")
+    return ConversationHandler.END
+
+
+async def collect_job(bot_data: dict, bot, chat_id: int, phone: str) -> None:
+    """Heavy work OFF the update loop, with progress + hard timeout."""
+    sm = bot_data["sm"]
+    db = bot_data["db"]
+    status = None
+    try:
+        status = await bot.send_message(chat_id, f"🔄 بجمع من {phone}…")
+    except Exception:
+        status = None
+    last = {"t": 0.0}
+
+    async def prog(n: int) -> None:
+        now = time.monotonic()
+        if not status or now - last["t"] < 4:
+            return
+        last["t"] = now
+        try:
+            await status.edit_text(f"🔄 بجمع من {phone}… {n} شات.")
+        except Exception:
+            pass
+
     try:
         async with sm.temp_client(phone) as client:
-            items = await collect_dialogs(client)
+            items = await asyncio.wait_for(collect_dialogs(client, prog),
+                                           timeout=600)
     except LoginError as e:
-        await update.message.reply_text(f"❌ {e}", reply_markup=menu_kb())
-        return ConversationHandler.END
+        await send_bg(bot, chat_id, f"❌ {e}", menu_kb())
+        return
+    except (asyncio.TimeoutError, TimeoutError):
+        await send_bg(bot, chat_id,
+                      "❌ جمع بطيء مقفش بسبب النت — ابعت الرقم تاني.",
+                      menu_kb())
+        return
     except Exception as e:
-        await update.message.reply_text(f"❌ فشل ({type(e).__name__}).",
-                                        reply_markup=menu_kb())
-        return ConversationHandler.END
+        await send_bg(bot, chat_id,
+                      f"❌ فشل ({type(e).__name__}) — جرب تاني أو غير النت.",
+                      menu_kb())
+        return
+    if status:
+        try:
+            await status.edit_text("✅ خلص الجمع.")
+        except Exception:
+            pass
     for chunk in save_and_format(db, phone, items):
-        await update.message.reply_text(chunk)
+        await send_bg(bot, chat_id, chunk, None)
     blocks = format_links_block(items)
     if blocks:
-        await update.message.reply_text(
-            f"📋 {len([i for i in items if i.get('link')])} رابط جاهز — دوس على المربع وانسخ الكل:")
+        n_links = sum(1 for i in items if i.get("link"))
+        await send_bg(bot, chat_id,
+                      f"📋 {n_links} رابط جاهز — دوس على المربع وانسخ الكل:", None)
         for b in blocks:
-            await update.message.reply_text(b, parse_mode="Markdown")
-    await update.message.reply_text("خلص ✅ — الزق اللي نسخته في ➕ انضم.",
-                                    reply_markup=menu_kb())
-    return ConversationHandler.END
+            await send_bg(bot, chat_id, b, None, parse_mode="Markdown")
+    await send_bg(bot, chat_id, "خلص ✅ — الزق اللي نسخته في ➕ انضم.",
+                  menu_kb())
+
+
+async def send_bg(bot, chat_id: int, text: str, kb=None, parse_mode=None) -> None:
+    """Fire-and-forget safety net for results sent from background tasks."""
+    try:
+        await bot.send_message(chat_id, text, reply_markup=kb,
+                               parse_mode=parse_mode)
+    except Exception:
+        log.warning("bg send to %s failed", chat_id)
 
 
 # ---------- broadcast flow ----------
@@ -634,36 +694,63 @@ def groups_text(targets: list, sel: set, minutes: int) -> str:
 
 
 async def show_group_select(update, context, minutes: int, edit: bool):
+    context.user_data["post_iv"] = minutes
+    if edit:
+        await update.callback_query.edit_message_text("🔄 بجيب الشاتات…")
+    else:
+        await update.message.reply_text(
+            "🔄 بجيب الشاتات… (لو الحساب فيه كتير هياخد شوية)")
+    asyncio.create_task(group_select_job(context, update, minutes, edit))
+
+
+async def group_select_job(context: ContextTypes.DEFAULT_TYPE, update,
+                           minutes: int, edit: bool) -> None:
     sm = context.bot_data["sm"]
     try:
         phone, client = await sm.ensure_active()
-        targets = await list_post_targets(client)
+        targets = await asyncio.wait_for(list_post_targets(client),
+                                         timeout=300)
     except LoginError as e:
         txt = f"❌ {e}"
-        if edit:
-            await update.callback_query.edit_message_text(txt, reply_markup=menu_kb())
-        else:
-            await update.message.reply_text(txt, reply_markup=menu_kb())
         context.user_data.clear()
+        await _edit_or_send(context, update, edit, txt, menu_kb())
+        return
+    except (asyncio.TimeoutError, TimeoutError):
+        context.user_data.clear()
+        await _edit_or_send(context, update, edit,
+                            "❌ النت بطيء وقايمة الشاتات مقفشت — جرب تاني.",
+                            menu_kb())
+        return
+    except Exception as e:
+        context.user_data.clear()
+        await _edit_or_send(context, update, edit,
+                            f"❌ فشل ({type(e).__name__}) — جرب تاني أو غير النت.",
+                            menu_kb())
         return
     if not targets:
-        txt = "مفيش جروبات في الحساب ده."
-        if edit:
-            await update.callback_query.edit_message_text(txt, reply_markup=menu_kb())
-        else:
-            await update.message.reply_text(txt, reply_markup=menu_kb())
         context.user_data.clear()
+        await _edit_or_send(context, update, edit, "مفيش جروبات في الحساب ده.",
+                            menu_kb())
         return
-    context.user_data["post_iv"] = minutes
-    context.user_data["post_phone"] = phone
+        context.user_data["post_phone"] = phone
     context.user_data["post_targets"] = targets
     context.user_data["post_sel"] = set(range(len(targets)))  # الكل متعلم
     kb = groups_kb(targets, context.user_data["post_sel"])
     txt = groups_text(targets, context.user_data["post_sel"], minutes)
-    if edit:
-        await update.callback_query.edit_message_text(txt, reply_markup=kb)
-    else:
-        await update.message.reply_text(txt, reply_markup=kb)
+    await _edit_or_send(context, update, edit, txt, kb)
+
+
+async def _edit_or_send(context, update, edit: bool, text: str, kb) -> None:
+    try:
+        if edit and update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=kb)
+        else:
+            chat = update.effective_chat
+            if chat is None:
+                return
+            await context.bot.send_message(chat.id, text, reply_markup=kb)
+    except Exception:
+        pass
 
 
 async def post_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
