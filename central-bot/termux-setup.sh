@@ -36,7 +36,11 @@ else
 fi
 
 # ---- 2) get the code (safe to re-run) ----
-if [ ! -f main.py ]; then
+if [ -d "$SUBDIR/.git" ]; then
+  say "[2/5] تحديث الكود (git pull)..."
+  (cd "$SUBDIR" && git pull --ff-only) >/dev/null 2>&1 || true
+  cd "$SUBDIR" || exit 1
+elif [ ! -f main.py ]; then
   if [ ! -d "$SUBDIR" ]; then
     say "[2/5] تحميل الكود..."
     git clone --depth 1 "$REPO_URL" tmpbot >/dev/null 2>&1
