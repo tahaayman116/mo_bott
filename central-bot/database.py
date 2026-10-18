@@ -16,14 +16,32 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 
+_in_init = False
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
+    global _in_init
+    db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
+    if not _in_init:
+        try:
+            cur = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
+            if cur.fetchone() is None:
+                con.close()
+                init_db(db_path)
+                con = sqlite3.connect(str(db_path))
+                con.row_factory = sqlite3.Row
+        except Exception:
+            pass
     return con
 
 
 def init_db(db_path: Path) -> None:
+    global _in_init
+    _in_init = True
     con = _connect(db_path)
     try:
         con.executescript(
@@ -65,6 +83,7 @@ def init_db(db_path: Path) -> None:
         con.commit()
     finally:
         con.close()
+        _in_init = False
 
 
 def now_iso() -> str:
