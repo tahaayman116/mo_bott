@@ -35,22 +35,25 @@ else
   exit 1
 fi
 
-# ---- 2) get the code (safe to re-run) ----
-if [ -d "$SUBDIR/.git" ]; then
-  say "[2/5] تحديث الكود (git pull)..."
-  (cd "$SUBDIR" && git pull --ff-only) >/dev/null 2>&1 || true
-  cd "$SUBDIR" || exit 1
-elif [ ! -f main.py ]; then
-  if [ ! -d "$SUBDIR" ]; then
-    say "[2/5] تحميل الكود..."
-    git clone --depth 1 "$REPO_URL" tmpbot >/dev/null 2>&1
-    mv "tmpbot/$SUBDIR" "./$SUBDIR"
-    rm -rf tmpbot
-  fi
-  cd "$SUBDIR" || exit 1
-else
-  say "[2/5] الكود موجود ✅"
+# ---- 2) get the code (git-tracked, safe to re-run) ----
+BASE="$HOME/mo_bott"
+# Migration: older setups lived in ~/central-bot without .git
+if [ ! -d "$BASE" ] && [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ]; then
+  mkdir -p "$BASE"
+  mv "$HOME/central-bot" "$BASE/$SUBDIR"
 fi
+if [ ! -d "$BASE/.git" ]; then
+  say "[2/5] تحميل الكود..."
+  git clone --depth 1 "$REPO_URL" "$BASE" >/dev/null 2>&1 || {
+    say "فشل التحميل — تحقق من النت."
+    exit 1
+  }
+fi
+cd "$BASE/$SUBDIR" || exit 1
+say "[2/5] تحديث الكود (git pull)..."
+git pull --ff-only >/dev/null 2>&1 || true
+# backward-compatible symlink so old instructions (cd ~/central-bot) still work
+[ -e "$HOME/central-bot" ] || ln -s "$BASE/$SUBDIR" "$HOME/central-bot" 2>/dev/null || true
 
 have_pgrep() { command -v pgrep >/dev/null 2>&1; }
 bot_running() {
