@@ -46,15 +46,30 @@ if [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ] \
     mv "$HOME/central-bot" "$BASE/$SUBDIR"
   fi
 fi
-# Ensure a valid clone containing the subdir
-if [ ! -d "$BASE/.git" ] || [ ! -d "$BASE/$SUBDIR" ]; then
+# Download the code (tarball — no git needed, more reliable on Termux)
+if [ ! -f "$BASE/$SUBDIR/main.py" ]; then
   say "[2/5] تحميل الكود..."
-  rm -rf "$BASE"
-  git clone --depth 1 "$REPO_URL" "$BASE"
-  if [ ! -d "$BASE/$SUBDIR" ]; then
-    say "فشل التحميل — تحقق من النت (أو ثبّت git: pkg install git -y)."
+  rm -rf "$BASE" /tmp/mo_bott_dl
+  mkdir -p /tmp/mo_bott_dl "$BASE/$SUBDIR"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o /tmp/mo_bott_dl/repo.tar.gz \
+      "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
+  else
+    wget -q -O /tmp/mo_bott_dl/repo.tar.gz \
+      "https://github.com/tahaayman116/mo_bott/archive/refs/heads/main.tar.gz"
+  fi
+  if [ ! -s /tmp/mo_bott_dl/repo.tar.gz ]; then
+    say "فشل التحميل — تحقق من النت."
     exit 1
   fi
+  tar -xzf /tmp/mo_bott_dl/repo.tar.gz -C /tmp/mo_bott_dl
+  extracted=$(find /tmp/mo_bott_dl -maxdepth 2 -type d -name "central-bot" | head -1)
+  if [ -z "$extracted" ] || [ ! -f "$extracted/main.py" ]; then
+    say "فشل استخراج الكود."
+    exit 1
+  fi
+  cp -r "$extracted/." "$BASE/$SUBDIR/"
+  rm -rf /tmp/mo_bott_dl
 fi
 cd "$BASE/$SUBDIR" || { say "تعذر الدخول للمجلد."; exit 1; }
 say "[2/5] تحديث الكود (git pull)..."
