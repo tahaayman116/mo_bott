@@ -74,8 +74,32 @@ def single_instance_guard() -> bool:
                 pass
             time.sleep(0.5)
             continue
-        # lock exists but owner hasn't written its pid yet: wait, never delete
-        time.sleep(0.5)
+        if old and not _pid_alive(old):
+            # stale lock: clear and retry
+            try:
+                shutil.rmtree(lockdir, ignore_errors=True)
+            except Exception:
+                pass
+            time.sleep(0.5)
+            continue
+        # lock exists but owner hasn't written its pid yet: wait briefly,
+        # then treat as orphaned and clear (a dead lock must not block forever)
+        if not old:
+            time.sleep(0.5)
+            # re-read once more
+            try:
+                old = int((lockdir / "pid").read_text(encoding="ascii").strip().split()[0])
+            except Exception:
+                old = 0
+            if not old:
+                try:
+                    shutil.rmtree(lockdir, ignore_errors=True)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                continue
+            time.sleep(0.5)
+            continue
     print("Could not acquire instance lock.", file=sys.stderr)
     return False
 
