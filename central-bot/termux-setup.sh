@@ -37,21 +37,28 @@ fi
 
 # ---- 2) get the code (git-tracked, safe to re-run) ----
 BASE="$HOME/mo_bott"
-# Migration: older setups lived in ~/central-bot without .git
-if [ ! -d "$BASE" ] && [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ]; then
-  mkdir -p "$BASE"
-  mv "$HOME/central-bot" "$BASE/$SUBDIR"
+SUBDIR="central-bot"
+# Migration from old flat install (no .git)
+if [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ] \
+   && [ ! -d "$HOME/central-bot/.git" ]; then
+  if [ ! -d "$BASE" ]; then
+    mkdir -p "$BASE"
+    mv "$HOME/central-bot" "$BASE/$SUBDIR"
+  fi
 fi
-if [ ! -d "$BASE/.git" ]; then
+# Ensure a valid clone containing the subdir
+if [ ! -d "$BASE/.git" ] || [ ! -d "$BASE/$SUBDIR" ]; then
   say "[2/5] تحميل الكود..."
-  git clone --depth 1 "$REPO_URL" "$BASE" >/dev/null 2>&1 || {
-    say "فشل التحميل — تحقق من النت."
+  rm -rf "$BASE"
+  git clone --depth 1 "$REPO_URL" "$BASE"
+  if [ ! -d "$BASE/$SUBDIR" ]; then
+    say "فشل التحميل — تحقق من النت (أو ثبّت git: pkg install git -y)."
     exit 1
-  }
+  fi
 fi
-cd "$BASE/$SUBDIR" || exit 1
+cd "$BASE/$SUBDIR" || { say "تعذر الدخول للمجلد."; exit 1; }
 say "[2/5] تحديث الكود (git pull)..."
-git pull --ff-only >/dev/null 2>&1 || true
+git pull --ff-only 2>/dev/null || true
 # backward-compatible symlink so old instructions (cd ~/central-bot) still work
 [ -e "$HOME/central-bot" ] || ln -s "$BASE/$SUBDIR" "$HOME/central-bot" 2>/dev/null || true
 
