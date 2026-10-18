@@ -107,6 +107,8 @@ def main() -> int:
             print(f"notify owner failed: {e}", file=sys.stderr, flush=True)
 
     app.post_init = _notify_owner
+    print(f"OWNER_ID={cfg.owner_id} BOT_TOKEN_SET=yes DB={cfg.db_path}",
+          file=sys.stderr, flush=True)
     print("Central bot running. Open your control bot and send /start "
           "(owner only). Ctrl+C to stop.", flush=True)
     app.run_polling(allowed_updates=["message", "callback_query"])

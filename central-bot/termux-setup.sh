@@ -160,6 +160,14 @@ else
   sleep 8
   if bot_running; then
     say "البوت شغال ✅"
+    # verify token + show bot username
+    if command -v curl >/dev/null 2>&1; then
+      uname=$(curl -s "https://api.telegram.org/bot$TOKEN/getMe" 2>/dev/null \
+              | sed -n 's/.*"username":"\([^"]*\)".*/@\1/p')
+      [ -n "$uname" ] && say "بوت التحكم: $uname  (أرسل /start لهذا البوت)"
+    fi
+    say "--- آخر 12 سطر من bot.log ---"
+    tail -n 12 bot.log 2>/dev/null || true
   else
     say "مشكلة في التشغيل — شوف آخر اللوج:"
     tail -n 20 bot.log 2>/dev/null || true

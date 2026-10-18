@@ -62,13 +62,15 @@ def menu_kb() -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     if not _owner_ok(update):
-        log.warning("Ignored non-owner user %s", u.id if u else "?")
+        log.warning("Ignored non-owner user %s (owner=%s)",
+                    u.id if u else "?", OWNER)
         if update.message is not None:
             try:
                 await update.message.reply_text(
                     "⛔ غير مخوّل.\n"
                     f"رقمك العددي: {u.id if u else '?'}\n"
-                    "تأكد أن OWNER_ID في .env يطابق هذا الرقم، ثم أعد تشغيل البوت.")
+                    f"المخوّل (OWNER_ID): {OWNER}\n"
+                    "إذا لم يتطابقا، عدّل OWNER_ID في .env وأعد تشغيل البوت.")
             except Exception:
                 pass
         return
