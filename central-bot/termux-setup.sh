@@ -38,13 +38,11 @@ fi
 # ---- 2) get the code (git-tracked, safe to re-run) ----
 BASE="$HOME/mo_bott"
 SUBDIR="central-bot"
-# Migration from old flat install (no .git)
+# Migration from old flat install (no .git) — move it so we don't lose data
 if [ -d "$HOME/central-bot" ] && [ -f "$HOME/central-bot/main.py" ] \
-   && [ ! -d "$HOME/central-bot/.git" ]; then
-  if [ ! -d "$BASE" ]; then
-    mkdir -p "$BASE"
-    mv "$HOME/central-bot" "$BASE/$SUBDIR"
-  fi
+   && [ ! -d "$HOME/central-bot/.git" ] && [ ! -d "$BASE/$SUBDIR" ]; then
+  mkdir -p "$BASE"
+  mv "$HOME/central-bot" "$BASE/$SUBDIR"
 fi
 # Download the code (tarball — no git needed, more reliable on Termux)
 # Always attempt fresh download so fixes propagate; fall back to existing on failure.
