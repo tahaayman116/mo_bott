@@ -681,14 +681,30 @@ async def post_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_POST_GROUPS
 
 
-def groups_kb(targets: list, sel: set) -> InlineKeyboardMarkup:
+POST_PAGE_SIZE = 20
+
+
+def groups_kb(targets: list, sel: set, page: int = 0) -> InlineKeyboardMarkup:
+    total = len(targets)
+    start = page * POST_PAGE_SIZE
+    end = min(total, start + POST_PAGE_SIZE)
     rows = []
-    for i, (ent, can_post) in enumerate(targets):
+    for i in range(start, end):
+        ent, can_post = targets[i]
         mark = "✅" if i in sel else "⬜"
         lock = "" if can_post else "🔇"
         title = (getattr(ent, "title", "") or "?")[:28]
         rows.append([InlineKeyboardButton(f"{mark}{lock} {title}",
                                           callback_data=f"p:t:{i}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"p:page:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{(total + POST_PAGE_SIZE - 1)//POST_PAGE_SIZE}",
+                                    callback_data="p:noop"))
+    if end < total:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"p:page:{page+1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton("✅ الكل", callback_data="p:all"),
                  InlineKeyboardButton("⬜ مسح", callback_data="p:none")])
     rows.append([InlineKeyboardButton("▶️ ابدأ النشر", callback_data="p:start"),
@@ -696,10 +712,12 @@ def groups_kb(targets: list, sel: set) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def groups_text(targets: list, sel: set, minutes: int) -> str:
+def groups_text(targets: list, sel: set, minutes: int, page: int = 0) -> str:
     n_no_post = sum(1 for _, c in targets if not c)
     extra = f"\n🔇 = قناة مش أدمن فيها (هتتخطى)." if n_no_post else ""
-    return (f"📢 اختار الشاتات ({len(sel)} من {len(targets)}) — كل {minutes} دقيقة:\n"
+    total_pages = (len(targets) + POST_PAGE_SIZE - 1) // POST_PAGE_SIZE
+    pg = f" (صفحة {page+1}/{total_pages})" if total_pages > 1 else ""
+    return (f"📢 اختار الشاتات ({len(sel)} من {len(targets)}) — كل {minutes} دقيقة{pg}:\n"
             f"دوس على الشات عشان تشيل/ترجع علامته.{extra}")
 
 
@@ -745,8 +763,9 @@ async def group_select_job(context: ContextTypes.DEFAULT_TYPE, update,
     context.user_data["post_phone"] = phone
     context.user_data["post_targets"] = targets
     context.user_data["post_sel"] = set(range(len(targets)))  # الكل متعلم
-    kb = groups_kb(targets, context.user_data["post_sel"])
-    txt = groups_text(targets, context.user_data["post_sel"], minutes)
+    context.user_data["post_page"] = 0
+    kb = groups_kb(targets, context.user_data["post_sel"], 0)
+    txt = groups_text(targets, context.user_data["post_sel"], minutes, 0)
     await _edit_or_send(context, update, edit, txt, kb)
 
 
@@ -768,6 +787,7 @@ async def post_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     targets = context.user_data.get("post_targets", [])
     sel: set = context.user_data.get("post_sel", set())
+    page = context.user_data.get("post_page", 0)
     data = q.data or ""
     if data == "p:all":
         sel = set(range(len(targets)))
@@ -780,10 +800,18 @@ async def post_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             i = -1
         if 0 <= i < len(targets):
             sel.discard(i) if i in sel else sel.add(i)
+    elif data.startswith("p:page:"):
+        try:
+            page = int(data.split("p:page:")[-1])
+        except ValueError:
+            page = 0
+        context.user_data["post_page"] = page
+    elif data == "p:noop":
+        return ASK_POST_GROUPS
     context.user_data["post_sel"] = sel
     minutes = context.user_data.get("post_iv", 5)
-    await q.edit_message_text(groups_text(targets, sel, minutes),
-                              reply_markup=groups_kb(targets, sel))
+    await q.edit_message_text(groups_text(targets, sel, minutes, page),
+                              reply_markup=groups_kb(targets, sel, page))
     return ASK_POST_GROUPS
 
 
@@ -910,7 +938,7 @@ def build_app(cfg, sm) -> Application:
                 ASK_POST_IV: [CallbackQueryHandler(post_iv_btn, pattern=r"^p:iv:\d+$"),
                               MessageHandler(filters.TEXT & ~filters.COMMAND, post_iv_msg)],
                 ASK_POST_GROUPS: [CallbackQueryHandler(post_toggle,
-                                                       pattern=r"^p:(t:\d+|all|none)$"),
+                                                       pattern=r"^p:(t:\d+|all|none|page:\d+|noop)$"),
                                   CallbackQueryHandler(post_begin,
                                                        pattern=r"^p:start$")]},
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
@@ -943,5 +971,6 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(CallbackQueryHandler(join_noop, pattern=r"^j:noop$"))
     app.add_handler(CallbackQueryHandler(join_all, pattern=r"^j:all$"))
     app.add_handler(CallbackQueryHandler(post_stop, pattern=r"^p:stop$"))
+    app.add_handler(CallbackQueryHandler(post_toggle, pattern=r"^p:noop$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop)$"))
     return app
