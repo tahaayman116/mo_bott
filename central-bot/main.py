@@ -93,8 +93,22 @@ def main() -> int:
     logging.getLogger().setLevel(getattr(logging, cfg.log_level, logging.INFO))
     sm = SessionManager(cfg.api_id, cfg.api_hash, cfg.sessions_dir, cfg.db_path)
     app = build_app(cfg, sm)
+    print(f"Central bot starting. OWNER_ID={cfg.owner_id} DB={cfg.db_path}",
+          file=sys.stderr, flush=True)
+
+    async def _notify_owner(application):
+        try:
+            await application.bot.send_message(
+                cfg.owner_id,
+                "✅ البوت المركزي شغال.\n"
+                f"OWNER_ID={cfg.owner_id}\n"
+                "إذا لم يصلك هذا، تحقق من OWNER_ID والتوكن وأعد التشغيل.")
+        except Exception as e:
+            print(f"notify owner failed: {e}", file=sys.stderr, flush=True)
+
+    app.post_init = _notify_owner
     print("Central bot running. Open your control bot and send /start "
-          "(owner only). Ctrl+C to stop.")
+          "(owner only). Ctrl+C to stop.", flush=True)
     app.run_polling(allowed_updates=["message", "callback_query"])
     return 0
 

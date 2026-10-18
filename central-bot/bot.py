@@ -60,9 +60,17 @@ def menu_kb() -> InlineKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
     if not _owner_ok(update):
-        log.warning("Ignored non-owner user %s",
-                    update.effective_user.id if update.effective_user else "?")
+        log.warning("Ignored non-owner user %s", u.id if u else "?")
+        if update.message is not None:
+            try:
+                await update.message.reply_text(
+                    "⛔ غير مخوّل.\n"
+                    f"رقمك العددي: {u.id if u else '?'}\n"
+                    "تأكد أن OWNER_ID في .env يطابق هذا الرقم، ثم أعد تشغيل البوت.")
+            except Exception:
+                pass
         return
     await update.message.reply_text("🎛️ البوت المركزي:", reply_markup=menu_kb())
 
@@ -732,7 +740,7 @@ async def group_select_job(context: ContextTypes.DEFAULT_TYPE, update,
         await _edit_or_send(context, update, edit, "مفيش جروبات في الحساب ده.",
                             menu_kb())
         return
-        context.user_data["post_phone"] = phone
+    context.user_data["post_phone"] = phone
     context.user_data["post_targets"] = targets
     context.user_data["post_sel"] = set(range(len(targets)))  # الكل متعلم
     kb = groups_kb(targets, context.user_data["post_sel"])
@@ -828,15 +836,19 @@ async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Network blips -> tell the owner to resend; duplicates -> warn loudly."""
     err = context.error
     log.warning("handler error: %r", err)
+    if isinstance(err, Conflict):
+        msg = ("⚠️ فيه نسخة تانية من البوت شغالة! اقفل أي نافذة زيادة "
+               "وخلي واحدة بس.")
+    elif isinstance(err, (TimedOut, NetworkError)):
+        msg = "⚠️ النت قطع لحظة وموصلتش — ابعت آخر حاجة تاني."
+    else:
+        msg = f"❌ خطأ: {type(err).__name__}: {str(err)[:200]}"
     try:
-        if not (update and update.effective_chat and _owner_ok(update)):
-            return
-        if isinstance(err, Conflict):
-            await update.effective_chat.send_message(
-                "⚠️ فيه نسخة تانية من البوت شغالة! اقفل أي نافذة زيادة وخلي واحدة بس.")
-        elif isinstance(err, (TimedOut, NetworkError)):
-            await update.effective_chat.send_message(
-                "⚠️ النت قطع لحظة وموصلتش — ابعت آخر حاجة تاني.")
+        if update is not None and update.effective_chat is not None \
+                and _owner_ok(update):
+            await update.effective_chat.send_message(msg)
+        elif OWNER:
+            await context.bot.send_message(OWNER, msg)
     except Exception:
         pass
 

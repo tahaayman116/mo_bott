@@ -50,7 +50,12 @@ fi
 
 have_pgrep() { command -v pgrep >/dev/null 2>&1; }
 bot_running() {
-  have_pgrep && pgrep -f "central-bot.*main.py" >/dev/null 2>&1
+  # Prefer the pid file the bot itself writes (reliable across Termux).
+  if [ -f logs/bot.pid ]; then
+    local p; p=$(tr -dc '0-9' < logs/bot.pid 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
+  fi
+  have_pgrep && pgrep -f "main\.py" >/dev/null 2>&1
 }
 
 # ---- 3) python env ----
@@ -61,11 +66,12 @@ fi
 .venv/bin/pip install --quiet -r requirements.txt
 
 # ---- 4) keys (ask once, validate, save) ----
-say "[4/5] المفاتيح (مرة واحدة بس):"
-if [ -f .env ]; then
-  cp .env .env.bak
-  say "(موجود .env قديم — اتنسخ احتياطي .env.bak)"
-fi
+say "[4/5] المفاتيح:"
+if [ -f .env ] && grep -q '^API_ID=' .env && grep -q '^API_HASH=' .env \
+   && grep -q '^CONTROL_BOT_TOKEN=' .env && grep -q '^OWNER_ID=' .env; then
+  say "موجود .env كامل — سأستخدمه (بدون سؤال)."
+  say "للتعديل: امسح .env أو عدّله يدويًا."
+else
 
 API_ID=""
 while :; do
@@ -124,18 +130,28 @@ done
   echo "POST_DAILY_CAP=100"
   echo "LOG_LEVEL=INFO"
 } > .env
-say "اتحفظ .env ✅"
+  say "اتحفظ .env ✅"
+fi
 
 # ---- 5) run ----
 say "[5/5] التشغيل..."
 mkdir -p data sessions logs
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+# stop any stale instance tracked by pid file first
+if [ -f logs/bot.pid ]; then
+  op=$(tr -dc '0-9' < logs/bot.pid 2>/dev/null)
+  if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then
+    say "إيقاف النسخة القديمة (PID $op)..."
+    kill "$op" 2>/dev/null || true
+    sleep 2
+  fi
+fi
 if bot_running; then
   say "البوت شغال أصلًا — مش هشغل نسخة تانية."
 else
   nohup .venv/bin/python main.py > bot.log 2>&1 &
   sleep 8
-  if bot_running || ! have_pgrep; then
+  if bot_running; then
     say "البوت شغال ✅"
   else
     say "مشكلة في التشغيل — شوف آخر اللوج:"
