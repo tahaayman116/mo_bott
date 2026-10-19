@@ -190,6 +190,8 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
                     return "عضو أصلًا.", []
                 if isinstance(e, InviteRequestSentError) or "INVITE_REQUEST_SENT" in str(e):
                     return "طلب انضمام مستني موافقة.", [url]
+                if "TOO_MUCH" in str(e).upper() or "TOO_MANY" in str(e).upper():
+                    return "وصلت للحد (500 جروب) — احذف بعض الجروبات أولاً.", [url]
                 raise
         if kind == "invite":
             try:
@@ -209,6 +211,8 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
                     raise
                 if "INVITE_REQUEST_SENT" in str(e):
                     return "طلب انضمام مستني موافقة.", [url]
+                if "TOO_MUCH" in str(e).upper() or "TOO_MANY" in str(e).upper():
+                    return "وصلت للحد (500 جروب) — احذف بعض الجروبات أولاً.", [url]
                 return "فشل.", []
         if kind == "folder":
             from telethon.tl import functions, types
@@ -241,6 +245,10 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
                     raise
                 except Exception as e:
                     last_err = type(e).__name__
+                    if "TOO_MUCH" in str(e).upper() or "TOO_MANY" in str(e).upper():
+                        last_err = "وصلت للحد (500 جروب)"
+                        # Stop further batches.
+                        break
                 try:
                     await asyncio.sleep(1.5)
                 except Exception:
@@ -265,6 +273,8 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
                 except Exception:
                     pass
             if joined == 0:
+                if "500" in last_err:
+                    return "وصلت للحد (500 جروب) — احذف بعض الجروبات أولاً.", [url]
                 msg = f"فشل ({last_err})." if last_err else "فشل."
                 return msg, []
             msg = f"انضميت لـ {joined} جروب في الفولدر (من {total_missing})."
@@ -321,6 +331,14 @@ class JoinQueue:
         except Exception as e:
             await self._notify(f"مش قادر أوصل ({e}).")
             return
+        # Warn if account is near the 500-group Telegram limit.
+        try:
+            dialogs = await client.get_dialogs(limit=520)
+            n_groups = len(dialogs)
+            if n_groups >= 490:
+                await self._notify(f"⚠️ الحساب يحتوي {n_groups} جروب/قناة (الحد ~500) — قد يفشل الانضمام.")
+        except Exception:
+            pass
         await self._notify(f"▶️ بدأت: {total} لينك كل {self.interval_min} دقيقة.")
         results: list[str] = []
         for i, (kind, payload) in enumerate(self.items, 1):
