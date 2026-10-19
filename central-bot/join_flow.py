@@ -113,6 +113,36 @@ async def _delete_oldest_chatlist_folder(client) -> str | None:
         return None
 
 
+def _to_input_peers(missing, chats, users) -> list:
+    """Convert TypePeer objects from a chatlist invite into InputPeer objects.
+
+    Bypasses Telethon's entity cache (which may be empty for freshly
+    fetched invites) by resolving access_hashes from the invite's chats/users.
+    """
+    from telethon.tl import types
+    out = []
+    chat_by_id = {getattr(c, "id", None): c for c in (chats or [])}
+    user_by_id = {getattr(u, "id", None): u for u in (users or [])}
+    for peer in (missing or []):
+        if isinstance(peer, types.PeerUser):
+            u = user_by_id.get(peer.user_id)
+            ah = getattr(u, "access_hash", None) if u is not None else None
+            if ah is not None:
+                out.append(types.InputPeerUser(peer.user_id, ah))
+        elif isinstance(peer, types.PeerChat):
+            out.append(types.InputPeerChat(peer.chat_id))
+        elif isinstance(peer, types.PeerChannel):
+            c = chat_by_id.get(peer.channel_id)
+            ah = getattr(c, "access_hash", None) if c is not None else None
+            if ah is not None:
+                out.append(types.InputPeerChannel(peer.channel_id, ah))
+            else:
+                out.append(peer)  # fall back; resolve() will try cache
+        else:
+            out.append(peer)
+    return out or list(missing or [])
+
+
 async def attempt_join(client, kind: str, payload: str) -> str:
     """One join attempt. Returns short Arabic result (no secrets)."""
     try:
@@ -167,28 +197,34 @@ async def attempt_join(client, kind: str, payload: str) -> str:
                 missing = list(getattr(inv, "peers", None) or [])
                 if not missing:
                     return "فولدر فارغ."
+            # Convert peers to input peers up-front (bypass stale cache).
+            input_peers = _to_input_peers(missing, getattr(inv, "chats", None),
+                                          getattr(inv, "users", None))
+            if not input_peers:
+                input_peers = missing
             deleted = await _delete_oldest_chatlist_folder(client)
             joined = 0
-            for i in range(0, len(missing), 20):
-                batch = missing[i:i + 20]
+            last_err = ""
+            for i in range(0, len(input_peers), 20):
+                batch = input_peers[i:i + 20]
                 try:
                     await client(functions.chatlists.JoinChatlistInviteRequest(payload, batch))
                     joined += len(batch)
                 except FloodWaitError:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    last_err = type(e).__name__
                 try:
                     await asyncio.sleep(0.5)
                 except Exception:
                     pass
             if joined == 0:
-                return "فشل."
+                return f"فشل ({last_err})." if last_err else "فشل."
             msg = f"انضميت لـ {joined} جروب في الفولدر."
             if deleted:
                 msg = f"حذفت مجلد قديم ({deleted}) بدون جروباته، ثم {msg}"
-            if joined < len(missing):
-                msg += f" (من {len(missing)})"
+            if joined < len(input_peers):
+                msg += f" (من {len(input_peers)})"
             return msg
     except FloodWaitError as e:
         raise
@@ -259,9 +295,9 @@ class JoinQueue:
             except Exception:
                 res = "فشل."
             database.counter_inc(self.db_path, "joins")
-            if res == "done":
+            if res == "done" or res.startswith("انضميت") or res.startswith("عضو أصلًا"):
                 ok += 1
-                results.append(f"{i}. ✅ انضميت")
+                results.append(f"{i}. ✅ {res}")
             else:
                 fail += 1
                 label = payload if kind == "public" else (payload[:12] + "…")
