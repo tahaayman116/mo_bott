@@ -83,6 +83,16 @@ def classify_link(url: str) -> tuple[str, str]:
     return "unsupported", url
 
 
+def _url_for(kind: str, payload: str) -> str:
+    if kind == "public":
+        return f"https://t.me/{payload}"
+    if kind == "invite":
+        return f"https://t.me/+{payload}"
+    if kind == "folder":
+        return f"https://t.me/addlist/{payload}"
+    return payload
+
+
 def _title_text(title) -> str:
     if title is None:
         return ""
@@ -143,61 +153,78 @@ def _to_input_peers(missing, chats, users) -> list:
     return out or list(missing or [])
 
 
-async def attempt_join(client, kind: str, payload: str) -> str:
-    """One join attempt. Returns short Arabic result (no secrets)."""
+def _url_for(kind: str, payload: str) -> str:
+    if kind == "public":
+        return f"https://t.me/{payload}"
+    if kind == "invite":
+        return f"https://t.me/+{payload}"
+    if kind == "folder":
+        return f"https://t.me/addlist/{payload}"
+    return payload
+
+
+async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]:
+    """One join attempt. Returns (short Arabic result, list of links needing
+    manual join because they require verification/questions)."""
+    url = _url_for(kind, payload)
     try:
         if kind == "public":
             try:
                 entity = await client.get_entity(payload)
             except Exception:
-                return "مش لاقي اليوزر."
+                return "مش لاقي اليوزر.", []
             from telethon.tl.types import Channel, Chat, User
             if isinstance(entity, User):
-                return "ده حساب شخص/بوت."
+                return "ده حساب شخص/بوت.", []
             if isinstance(entity, Chat):
-                return "جروب صغير — لازم دعوة."
+                return "جروب صغير — لازم دعوة.", []
+            # Verification/question groups: skip + send link for manual join.
+            if getattr(entity, "join_request", False):
+                return "verify", [url]
             try:
                 await client(JoinChannelRequest(entity))
-                return "done"
+                return "done", []
             except (UserAlreadyParticipantError, Exception) as e:
                 if isinstance(e, UserAlreadyParticipantError) or \
                         "ALREADY_PARTICIPANT" in str(e) or "USER_ALREADY_PARTICIPANT" in str(e):
-                    return "عضو أصلًا."
+                    return "عضو أصلًا.", []
                 if isinstance(e, InviteRequestSentError) or "INVITE_REQUEST_SENT" in str(e):
-                    return "طلب انضمام مستني موافقة."
+                    return "طلب انضمام مستني موافقة.", [url]
                 raise
         if kind == "invite":
             try:
                 inv = await client(CheckChatInviteRequest(payload))
             except Exception:
-                return "الدعوة انتهت."
+                return "الدعوة انتهت.", []
+            if getattr(inv, "request_needed", False):
+                return "verify", [url]
             already = getattr(inv, "already_participant", False)
             if already:
-                return "عضو أصلًا."
+                return "عضو أصلًا.", []
             try:
                 await client(ImportChatInviteRequest(payload))
-                return "done"
+                return "done", []
             except Exception as e:
                 if "FLOOD" in type(e).__name__.upper():
                     raise
                 if "INVITE_REQUEST_SENT" in str(e):
-                    return "طلب انضمام مستني موافقة."
-                return "فشل."
+                    return "طلب انضمام مستني موافقة.", [url]
+                return "فشل.", []
         if kind == "folder":
             from telethon.tl import functions, types
             try:
                 inv = await client(functions.chatlists.CheckChatlistInviteRequest(payload))
             except Exception:
-                return "الدعوة انتهت."
+                return "الدعوة انتهت.", []
             if isinstance(inv, types.chatlists.ChatlistInviteAlready):
                 missing = list(getattr(inv, "missing_peers", None) or [])
                 if not missing:
-                    return "عضو أصلًا (فولدر)."
+                    return "عضو أصلًا (فولدر).", []
             else:
                 missing = list(getattr(inv, "peers", None) or [])
                 if not missing:
-                    return "فولدر فارغ."
-            # Convert peers to input peers up-front (bypass stale cache).
+                    return "فولدر فارغ.", []
+            total_missing = len(missing)
             input_peers = _to_input_peers(missing, getattr(inv, "chats", None),
                                           getattr(inv, "users", None))
             if not input_peers:
@@ -215,22 +242,42 @@ async def attempt_join(client, kind: str, payload: str) -> str:
                 except Exception as e:
                     last_err = type(e).__name__
                 try:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.5)
+                except Exception:
+                    pass
+            manual: list[str] = []
+            if joined > 0:
+                # Re-check to find chats that could not be joined (verification/etc).
+                try:
+                    inv2 = await client(functions.chatlists.CheckChatlistInviteRequest(payload))
+                    if isinstance(inv2, types.chatlists.ChatlistInviteAlready):
+                        remaining = list(getattr(inv2, "missing_peers", None) or [])
+                    else:
+                        remaining = list(getattr(inv2, "peers", None) or [])
+                    if remaining:
+                        chat_by_id = {getattr(c, "id", None): c for c in (getattr(inv, "chats", None) or [])}
+                        for peer in remaining:
+                            cid = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None) or getattr(peer, "user_id", None)
+                            c = chat_by_id.get(cid)
+                            title = _title_text(getattr(c, "title", None)) if c is not None else ""
+                            label = title if title else str(cid)
+                            manual.append(f"{url} — {label}")
                 except Exception:
                     pass
             if joined == 0:
-                return f"فشل ({last_err})." if last_err else "فشل."
-            msg = f"انضميت لـ {joined} جروب في الفولدر."
+                msg = f"فشل ({last_err})." if last_err else "فشل."
+                return msg, []
+            msg = f"انضميت لـ {joined} جروب في الفولدر (من {total_missing})."
             if deleted:
                 msg = f"حذفت مجلد قديم ({deleted}) بدون جروباته، ثم {msg}"
-            if joined < len(input_peers):
-                msg += f" (من {len(input_peers)})"
-            return msg
+            if manual:
+                msg += f" ({len(manual)} يحتاج تحقق)"
+            return msg, manual
     except FloodWaitError as e:
         raise
     except Exception:
-        return "فشل."
-    return "فشل."
+        return "فشل.", []
+    return "فشل.", []
 
 
 class JoinQueue:
@@ -245,6 +292,7 @@ class JoinQueue:
         self.items: list[tuple[str, str]] = []
         self.interval_min = 5
         self.phone = ""
+        self._manual_links: list[str] = []
 
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -255,6 +303,7 @@ class JoinQueue:
         self.items = list(items)
         self.interval_min = max(1, min(1440, interval_min))
         self.phone = phone
+        self._manual_links = []
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run())
 
@@ -288,20 +337,22 @@ class JoinQueue:
             # No daily cap on joins (user's choice). FloodWait from Telegram
             # still stops the queue. Attempts are still counted for status.
             try:
-                res = await attempt_join(client, kind, payload)
+                res, manual = await attempt_join(client, kind, payload)
             except FloodWaitError as e:
                 await self._notify(f"تليجرام طلب انتظار {e.seconds} ث — وقفت.")
                 break
             except Exception:
-                res = "فشل."
+                res, manual = "فشل.", []
             database.counter_inc(self.db_path, "joins")
-            if res == "done" or res.startswith("انضميت") or res.startswith("عضو أصلًا"):
+            if "انضميت" in res or "عضو أصلًا" in res or res == "done":
                 ok += 1
                 results.append(f"{i}. ✅ {res}")
             else:
                 fail += 1
                 label = payload if kind == "public" else (payload[:12] + "…")
                 results.append(f"{i}. ❌ {label}: {res}")
+            if manual:
+                self._manual_links.extend(manual)
             left = total - i
             if left > 0 and not self._stop.is_set():
                 try:
@@ -314,3 +365,8 @@ class JoinQueue:
         if results:
             report += "\n" + "\n".join(results[:10])
         await self._notify(report)
+        if self._manual_links:
+            try:
+                await self._notify("📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(self._manual_links[:30]))
+            except Exception:
+                pass

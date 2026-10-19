@@ -496,16 +496,18 @@ async def join_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("خلصت.", reply_markup=menu_kb())
         return
     url, kind, payload = items[idx]
+    manual: list[str] = []
     try:
         _, client = await sm.ensure_active()
-        res = await attempt_join(client, kind, payload)
+        res, manual = await attempt_join(client, kind, payload)
     except Exception as e:
         res = f"مش قادر أوصل ({type(e).__name__})."
     database.counter_inc(context.bot_data["db"], "joins")
     await q.answer("✅ انضميت" if res == "done" else res, show_alert=False)
-    await q.edit_message_text(
-        f"{url}\nالنتيجة: {'✅ انضميت' if res == 'done' else res}",
-        reply_markup=back_kb())
+    text = f"{url}\nالنتيجة: {'✅ انضميت' if res == 'done' else res}"
+    if manual:
+        text += "\n📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(manual)
+    await q.edit_message_text(text, reply_markup=back_kb())
 
 
 async def join_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -532,10 +534,13 @@ async def join_all_job(bot_data: dict, bot, chat_id: int,
     ok = 0
     n = len(items)
     last = {"t": 0.0}
+    manual_all: list[str] = []
     for idx, (_, kind, payload) in enumerate(items, 1):
         try:
-            if await attempt_join(client, kind, payload) == "done":
+            res, manual = await attempt_join(client, kind, payload)
+            if "انضميت" in res or "عضو أصلًا" in res or res == "done":
                 ok += 1
+            manual_all.extend(manual)
         except Exception:
             pass
         database.counter_inc(bot_data["db"], "joins")
@@ -544,6 +549,10 @@ async def join_all_job(bot_data: dict, bot, chat_id: int,
             last["t"] = now
             await send_bg(bot, chat_id, f"⏳ {idx}/{n} خلصو ({ok} ✅)…")
     await send_bg(bot, chat_id, f"🏁 {ok}✅ من {n}.", back_kb())
+    if manual_all:
+        await send_bg(bot, chat_id,
+                      "📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(manual_all[:30]),
+                      back_kb())
 
 
 # ---------- collect flow ----------
