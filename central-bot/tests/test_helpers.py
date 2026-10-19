@@ -133,9 +133,10 @@ def test_prepare_join_items_and_limit():
         "https://t.me/addlist/AbCdEf",
         "https://google.com/x",
     ])
-    assert len(items) == 2
+    assert len(items) == 3
     assert folders == 1
     assert items[0][:2] == ("https://t.me/somegroup", "public")
+    assert items[2][:2] == ("https://t.me/addlist/AbCdEf", "folder")
 
 
 def test_get_join_limit(tmp_path=None):

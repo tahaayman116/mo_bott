@@ -311,7 +311,7 @@ def build_join_preview(items, folders):
     if len(items) > PREVIEW_LIST_MAX:
         lines.append(f"... و {len(items) - PREVIEW_LIST_MAX} كمان")
     if folders:
-        lines.append(f"({folders} فولدر — يتفتح يدوي)")
+        lines.append(f"({folders} فولدر — سيضم كل جروباته)")
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ تلقائي بوقت", callback_data="j:auto"),
          InlineKeyboardButton("✋ يدوي", callback_data="j:manual")],

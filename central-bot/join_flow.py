@@ -44,7 +44,8 @@ def merge_links(acc: list[str], new: list[str]) -> list[str]:
 def prepare_join_items(urls: list[str]) -> tuple[list[tuple[str, str, str]], int]:
     """Classify + filter raw urls. Returns (items, folder_count).
 
-    items: list of (url, kind, payload), folders/unsupported skipped.
+    items: list of (url, kind, payload). Folders are now joinable (kind='folder'),
+    so they are included in items (not skipped). folder_count = number of folders.
     """
     items: list[tuple[str, str, str]] = []
     folders = 0
@@ -52,6 +53,7 @@ def prepare_join_items(urls: list[str]) -> tuple[list[tuple[str, str, str]], int
         kind, payload = classify_link(url)
         if kind == "folder":
             folders += 1
+            items.append((url, kind, payload))
             continue
         if kind == "unsupported":
             continue
@@ -79,6 +81,36 @@ def classify_link(url: str) -> tuple[str, str]:
     if m and "/" not in path:
         return "public", m.group(1)
     return "unsupported", url
+
+
+def _title_text(title) -> str:
+    if title is None:
+        return ""
+    t = getattr(title, "text", None)
+    if t:
+        return str(t)
+    return str(title)
+
+
+async def _delete_oldest_chatlist_folder(client) -> str | None:
+    """Delete the oldest chatlist (shared) folder to free a slot.
+
+    Deleting the folder filter does NOT delete its chats. Returns the deleted
+    folder's title (or None if nothing was deleted).
+    """
+    try:
+        from telethon.tl import functions, types
+        res = await client(functions.messages.GetDialogFiltersRequest())
+        filters = getattr(res, "filters", None) or []
+        chatlists = [f for f in filters if isinstance(f, types.DialogFilterChatlist)]
+        if len(chatlists) < 2:
+            return None
+        oldest = sorted(chatlists, key=lambda f: getattr(f, "id", 0))[0]
+        await client(functions.messages.UpdateDialogFilterRequest(
+            getattr(oldest, "id", 0), None))
+        return _title_text(getattr(oldest, "title", None)) or "مجلد قديم"
+    except Exception:
+        return None
 
 
 async def attempt_join(client, kind: str, payload: str) -> str:
@@ -121,6 +153,43 @@ async def attempt_join(client, kind: str, payload: str) -> str:
                 if "INVITE_REQUEST_SENT" in str(e):
                     return "طلب انضمام مستني موافقة."
                 return "فشل."
+        if kind == "folder":
+            from telethon.tl import functions, types
+            try:
+                inv = await client(functions.chatlists.CheckChatlistInviteRequest(payload))
+            except Exception:
+                return "الدعوة انتهت."
+            if isinstance(inv, types.chatlists.ChatlistInviteAlready):
+                missing = list(getattr(inv, "missing_peers", None) or [])
+                if not missing:
+                    return "عضو أصلًا (فولدر)."
+            else:
+                missing = list(getattr(inv, "peers", None) or [])
+                if not missing:
+                    return "فولدر فارغ."
+            deleted = await _delete_oldest_chatlist_folder(client)
+            joined = 0
+            for i in range(0, len(missing), 20):
+                batch = missing[i:i + 20]
+                try:
+                    await client(functions.chatlists.JoinChatlistInviteRequest(payload, batch))
+                    joined += len(batch)
+                except FloodWaitError:
+                    raise
+                except Exception:
+                    pass
+                try:
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+            if joined == 0:
+                return "فشل."
+            msg = f"انضميت لـ {joined} جروب في الفولدر."
+            if deleted:
+                msg = f"حذفت مجلد قديم ({deleted}) بدون جروباته، ثم {msg}"
+            if joined < len(missing):
+                msg += f" (من {len(missing)})"
+            return msg
     except FloodWaitError as e:
         raise
     except Exception:
