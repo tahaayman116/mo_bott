@@ -25,6 +25,16 @@ def test_extract_links():
     assert links == ["https://t.me/abc", "https://t.me/+HASH1"]
 
 
+def test_extract_all_links_watcher():
+    from link_watcher import extract_all_links
+    text = "لينك t.me/mygroup وكمان https://t.me/+HASH1 و t.me/addlist/Ab12"
+    links = extract_all_links(text)
+    assert "https://t.me/mygroup" in links
+    assert "https://t.me/+HASH1" in links
+    assert "https://t.me/addlist/Ab12" in links
+    assert len(links) == len({u.lower() for u in links})
+
+
 def test_classify_link():
     assert classify_link("https://t.me/somegroup") == ("public", "somegroup")
     assert classify_link("https://t.me/+AbCdEf123456") == ("invite", "AbCdEf123456")

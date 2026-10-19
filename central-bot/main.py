@@ -120,6 +120,17 @@ def main() -> int:
     print(f"Central bot starting. OWNER_ID={cfg.owner_id} DB={cfg.db_path}",
           file=sys.stderr, flush=True)
 
+    async def _watch_keeper(application):
+        w = application.bot_data.get("watcher")
+        sm = application.bot_data["sm"]
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if w and w.is_enabled() and sm.active_client is not w.client:
+                    await w.restart()
+            except Exception:
+                pass
+
     async def _notify_owner(application):
         try:
             await application.bot.send_message(
@@ -129,6 +140,10 @@ def main() -> int:
                 "إذا لم يصلك هذا، تحقق من OWNER_ID والتوكن وأعد التشغيل.")
         except Exception as e:
             print(f"notify owner failed: {e}", file=sys.stderr, flush=True)
+        w = application.bot_data.get("watcher")
+        if w and w.is_enabled():
+            application.create_task(w.start())
+        application.create_task(_watch_keeper(application))
 
     app.post_init = _notify_owner
     print(f"OWNER_ID={cfg.owner_id} BOT_TOKEN_SET=yes DB={cfg.db_path}",

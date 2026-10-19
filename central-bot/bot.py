@@ -28,6 +28,7 @@ from join_flow import (JOIN_LIMIT_DEFAULT, JOIN_LIMIT_MAX, MANUAL_BTNS_MAX,
                        PREVIEW_LIST_MAX, JoinQueue, attempt_join,
                        clamp_join_limit, classify_link, merge_links,
                        prepare_join_items)
+from link_watcher import LinkWatcher
 from session_manager import LoginError
 from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.request import HTTPXRequest
@@ -50,12 +51,13 @@ def _owner_ok(update: Update) -> bool:
 
 def menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ انضم لجروبات", callback_data="m:join"),
+        [InlineKeyboardButton("➕ انضمام لجروبات", callback_data="m:join"),
          InlineKeyboardButton("📋 تجميع", callback_data="m:collect")],
         [InlineKeyboardButton("📢 نشر إعلان", callback_data="m:post"),
          InlineKeyboardButton("📱 الأرقام", callback_data="m:nums")],
-        [InlineKeyboardButton("📊 حالة", callback_data="m:status"),
-         InlineKeyboardButton("⏹ إيقاف الكل", callback_data="m:stop")],
+        [InlineKeyboardButton("👁 مراقبة", callback_data="m:watch"),
+         InlineKeyboardButton("📊 حالة", callback_data="m:status")],
+        [InlineKeyboardButton("⏹ إيقاف الكل", callback_data="m:stop")],
     ])
 
 
@@ -84,6 +86,7 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = q.data or ""
     sm = context.bot_data["sm"]
+    db = context.bot_data["db"]
     if data == "m:menu":
         await q.edit_message_text("🎛️ البوت المركزي:", reply_markup=menu_kb())
     elif data == "m:status":
@@ -92,7 +95,25 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "m:stop":
         context.bot_data["joinq"].stop()
         context.bot_data["bc"].stop()
+        w = context.bot_data.get("watcher")
+        if w:
+            await w.set_enabled(False)
+            database.kv_set(db, "watch_enabled", "0")
         await q.edit_message_text("⏹ وقفت كل حاجة.", reply_markup=back_kb())
+    elif data == "m:watch":
+        w = context.bot_data.get("watcher")
+        if w is None:
+            await q.answer("المراقبة غير متاحة.", show_alert=True)
+            return
+        new_state = not w.is_enabled()
+        started = await w.set_enabled(new_state)
+        database.kv_set(db, "watch_enabled", "1" if new_state else "0")
+        state_txt = "✅ شغال" if (new_state and started) else "❌ واقف"
+        extra = ("\n⚠️ مفيش رقم نشط — فعّل رقم الأول." 
+                 if new_state and not started else "")
+        await q.edit_message_text(f"👁 مراقبة: {state_txt}{extra}\n"
+                                  "يرسل لينكات جروبات جديدة (ليس قنوات).",
+                                  reply_markup=menu_kb())
 
 
 def back_kb() -> InlineKeyboardMarkup:
@@ -107,10 +128,13 @@ async def status_text(context) -> str:
     active = database.get_active_phone(db)
     joinq: JoinQueue = context.bot_data["joinq"]
     bc: BroadcastWorker = context.bot_data["bc"]
+    w = context.bot_data.get("watcher")
+    watch_state = "شغال" if (w and w.is_enabled()) else "واقف"
     lines = ["📊 الحالة:", f"الأرقام: {len(accs)}",
              f"النشط: {active or 'مفيش'}",
              f"الانضمام التلقائي: {'شغال' if joinq.running() else 'واقف'}",
              f"النشر: {'شغال' if bc.running() else 'واقف'}",
+             f"المراقبة: {watch_state}",
              f"انضمامات النهاردة: {database.counter_get(db, 'joins')}",
              f"منشورات النهاردة: {database.counter_get(db, 'posts')}"]
     return "\n".join(lines)
@@ -136,6 +160,12 @@ async def nums_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               reply_markup=InlineKeyboardMarkup(rows))
 
 
+async def _restart_watcher(context):
+    w = context.bot_data.get("watcher")
+    if w and w.is_enabled():
+        await w.restart()
+
+
 async def num_use(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -146,6 +176,7 @@ async def num_use(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except LoginError as e:
         await q.edit_message_text(f"❌ {e}", reply_markup=back_kb())
         return
+    await _restart_watcher(context)
     await q.edit_message_text(f"✅ النشط بقى: {name} ({phone})",
                               reply_markup=back_kb())
 
@@ -216,6 +247,7 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sm.set_active(phone)
     except LoginError:
         pass
+    await _restart_watcher(context)
     await update.message.reply_text(f"✅ اتسجل وبقى نشط: {phone}", reply_markup=menu_kb())
     return ConversationHandler.END
 
@@ -257,6 +289,7 @@ async def add_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sm.set_active(phone)
     except LoginError:
         pass
+    await _restart_watcher(context)
     await context.bot.send_message(update.effective_chat.id,
                                    f"✅ اتسجل وبقى نشط: {phone}",
                                    reply_markup=menu_kb())
@@ -920,6 +953,9 @@ def build_app(cfg, sm) -> Application:
 
     app.bot_data["joinq"] = JoinQueue(cfg.db_path, _get_client, _notify)
     app.bot_data["bc"] = BroadcastWorker(cfg.db_path, _get_client, _notify)
+    watcher = LinkWatcher(_get_client, _notify, cfg.db_path)
+    watcher._enabled = database.kv_get(cfg.db_path, "watch_enabled", "0") == "1"
+    app.bot_data["watcher"] = watcher
 
     join_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(join_start, pattern=r"^m:join$")],
@@ -981,5 +1017,5 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(CallbackQueryHandler(join_all, pattern=r"^j:all$"))
     app.add_handler(CallbackQueryHandler(post_stop, pattern=r"^p:stop$"))
     app.add_handler(CallbackQueryHandler(post_toggle, pattern=r"^p:noop$"))
-    app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop)$"))
+    app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop|watch)$"))
     return app

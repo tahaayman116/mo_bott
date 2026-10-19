@@ -184,6 +184,10 @@ class SessionManager:
     def active_phone(self) -> str:
         return self._active_phone or database.get_active_phone(self.db_path)
 
+    @property
+    def active_client(self):
+        return self._active_client
+
     async def set_active(self, phone: str) -> str:
         """Disconnect current, connect chosen. Returns display name."""
         async with self._lock:
