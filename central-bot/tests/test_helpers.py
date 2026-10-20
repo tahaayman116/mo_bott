@@ -291,6 +291,64 @@ def test_super_worker_per_account_limit(tmp_path):
     assert database.counter_get(db, "posts") == 6
     assert any("one" in n and "3✅" in n for n in notes)
     assert any("two" in n and "3✅" in n for n in notes)
+    report = "\n".join(notes)
+    assert "✅ نشر في (3)" in report
+    assert "+20111-0" in report
+    assert "+20222-0" in report
+
+
+def test_super_report_lists_posted_and_blocked(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from telethon.tl.types import Channel
+    import database
+    from broadcast_flow import SuperBroadcastWorker
+
+    db = tmp_path / "super_report.db"
+    database.init_db(db)
+    database.add_account(db, "+20111", "a.session", "one")
+    notes: list[str] = []
+
+    class FakeClient:
+        async def iter_dialogs(self):
+            for cid, title, mega in ((1, "Good Group", True),
+                                     (2, "Banned Group", True),
+                                     (3, "Skip Channel", False)):
+                ch = Channel(id=cid, title=title, photo=None, date=None,
+                             access_hash=cid, megagroup=mega)
+                yield SimpleNamespace(entity=ch)
+
+        async def send_message(self, ent, text):
+            if ent.id == 2:
+                raise Exception("USER_BANNED_IN_CHANNEL")
+
+    class FakeCtx:
+        async def __aenter__(self):
+            return FakeClient()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeSM:
+        def temp_client(self, phone):
+            return FakeCtx()
+
+    async def notify(text):
+        notes.append(text)
+
+    async def main():
+        w = SuperBroadcastWorker(db, FakeSM(), notify)
+        w.start(["+20111"], "ad", 10, 0)
+        w.interval_sec = 0.01
+        await w._task
+
+    asyncio.run(main())
+    report = "\n".join(notes)
+    assert "✅ نشر في (1)" in report
+    assert "• Good Group" in report
+    assert "🚫 فشل/محظور (1)" in report
+    assert "• Banned Group — محظور من النشر" in report
+    assert "⏭️ متخطى: 1" in report
 
 
 def test_describe_send_error():

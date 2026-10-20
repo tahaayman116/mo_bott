@@ -8,7 +8,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import Channel, Chat
 
 import database
-from helpers import format_duration_ar
+from helpers import chunk_text
 
 
 def describe_send_error(e: Exception) -> str:
@@ -182,10 +182,6 @@ class SuperBroadcastWorker:
         self._task = None
 
     async def _run(self) -> None:
-        limit_txt = f"{self.daily_limit} لكل رقم" if self.daily_limit else "بدون حد"
-        await self._notify(
-            f"🚀 السوبر بدأ: {len(self.phones)} رقم — كل "
-            f"{format_duration_ar(self.interval_sec)} — الحد اليومي: {limit_txt}.")
         results = await asyncio.gather(
             *(self._run_account(p) for p in self.phones), return_exceptions=True)
         ok = fail = skip = 0
@@ -204,68 +200,97 @@ class SuperBroadcastWorker:
         name = acc.get("display_name") or phone
         sent = database.counter_get(self.db_path, f"sent:{phone}")
         if self.daily_limit and sent >= self.daily_limit:
-            await self._notify(
-                f"⏭️ {name}: وصل للحد اليومي ({self.daily_limit}) — تخطي.")
+            await self._send_report(name, (
+                f"🏁 تقرير {name}:\n"
+                f"⏭️ الحساب وصل للحد اليومي ({self.daily_limit}) — "
+                f"منشور النهاردة: {sent}."))
             return (phone, 0, 0, 0, "limit")
         ok = fail = skip = 0
-        failures: list[str] = []
         total = 0
+        posted: list[str] = []
+        failed: list[str] = []
+        note = ""
+        status = "done"
         try:
             async with self._sm.temp_client(phone) as client:
                 targets = await asyncio.wait_for(
                     list_post_targets(client), timeout=300)
                 total = len(targets)
+                if not total:
+                    note = "⚠️ مفيش شاتات متاحة للنشر."
                 for i, (ent, can_post) in enumerate(targets, 1):
                     if self._stop.is_set():
+                        status = "stopped"
+                        note = "⏹ اتوقف يدويًا."
                         break
+                    title = (getattr(ent, "title", "") or "?").strip()[:80] or "?"
                     if not can_post:
                         skip += 1
                         continue
                     if self.daily_limit and sent >= self.daily_limit:
-                        await self._notify(
-                            f"🛑 {name}: وصل للحد اليومي ({self.daily_limit}).")
+                        status = "limit"
+                        left = max(0, total - ok - fail - skip)
+                        note = (f"🛑 وقف عند الحد اليومي ({self.daily_limit}) — "
+                                f"باقي {left} شات ماتحاولش.")
                         break
-                    title = (getattr(ent, "title", "") or "?")[:30]
                     try:
                         await client.send_message(ent, self.text)
                         ok += 1
                         sent += 1
+                        posted.append(title)
                         database.counter_inc(self.db_path, f"sent:{phone}")
                         database.counter_inc(self.db_path, "posts")
                     except FloodWaitError as e:
                         fail += 1
                         database.counter_inc(self.db_path, "posts")
-                        await self._notify(
-                            f"⏳ {name}: تليجرام طلب انتظار {e.seconds} ث — وقفت الرقم ده.")
-                        await self._notify(
-                            self._report(name, ok, fail, skip, total, failures, True))
-                        return (phone, ok, fail, skip, "flood")
+                        failed.append(f"{title} — تليجرام طلب انتظار {e.seconds} ث")
+                        status = "flood"
+                        note = f"⏳ تليجرام طلب انتظار {e.seconds} ث — وقف الحساب."
+                        break
                     except Exception as e:
                         fail += 1
                         database.counter_inc(self.db_path, "posts")
-                        if len(failures) < 5:
-                            failures.append(f"{title}: {describe_send_error(e)}")
+                        failed.append(f"{title} — {describe_send_error(e)}")
                     if i < total and not self._stop.is_set():
                         try:
                             await asyncio.wait_for(
                                 self._stop.wait(), timeout=self.interval_sec)
                         except asyncio.TimeoutError:
                             pass
-                await self._notify(
-                    self._report(name, ok, fail, skip, total, failures))
-                return (phone, ok, fail, skip, "")
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            status = "error"
             reason = str(e).replace("\n", " ")[:120]
             detail = f"{type(e).__name__}: {reason}" if reason else type(e).__name__
-            await self._notify(f"❌ {name}: وقف — {detail}")
-            return (phone, ok, fail, skip, "error")
+            note = f"❌ وقف بسبب {detail}"
+        await self._send_report(
+            name, self._report(name, ok, fail, skip, total, posted, failed, note))
+        return (phone, ok, fail, skip, status)
+
+    async def _send_report(self, name: str, text: str) -> None:
+        chunks = chunk_text(text, 3600)
+        if len(chunks) == 1:
+            await self._notify(chunks[0])
+            return
+        for i, chunk in enumerate(chunks, 1):
+            await self._notify(
+                f"📄 تقرير {name} ({i}/{len(chunks)}):\n{chunk}")
 
     @staticmethod
-    def _report(name, ok, fail, skip, total, failures, stopped=False) -> str:
-        head = "⏹" if stopped else "🏁"
-        text = f"{head} {name}: {ok}✅ {fail}❌ {skip}⏭️ من {total}."
-        if failures:
-            text += "\n" + "\n".join(failures)
-        return text
+    def _report(name, ok, fail, skip, total, posted, failed, note="") -> str:
+        lines = [
+            f"🏁 تقرير {name}:",
+            f"{ok}✅ {fail}❌ {skip}⏭️ — محاولات: {ok + fail} من {total} شات.",
+        ]
+        if posted:
+            lines.append(f"\n✅ نشر في ({len(posted)}):")
+            lines.extend(f"• {t}" for t in posted)
+        if failed:
+            lines.append(f"\n🚫 فشل/محظور ({len(failed)}):")
+            lines.extend(f"• {t}" for t in failed)
+        if skip:
+            lines.append(f"\n⏭️ متخطى: {skip} (مش متاح للنشر).")
+        if note:
+            lines.append(f"\n{note}")
+        return "\n".join(lines)

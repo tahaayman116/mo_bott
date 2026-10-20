@@ -138,7 +138,7 @@ async def status_text(context) -> str:
     w = context.bot_data.get("watcher")
     watch_state = "شغال" if (w and w.is_enabled()) else "واقف"
     if sbc and sbc.running():
-        super_state = f"شغال ({len(sbc.phones)} أرقام)"
+        super_state = f"شغال ({len(sbc.phones)} حساب)"
     else:
         super_state = "واقف"
     lines = ["📊 الحالة:", f"الأرقام: {len(accs)}",
@@ -992,7 +992,7 @@ async def post_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- super broadcast flow ----------
 def super_accs_text(accs: list, sel: set) -> str:
     return (f"🚀 السوبر — اختار الأرقام ({len(sel)} من {len(accs)}):\n"
-            "هينشر في كل الشاتات القابلة للنشر لكل رقم مختار.")
+            "هينشر في كل الشاتات القابلة للنشر لكل حساب مختار.")
 
 
 def super_accs_kb(accs: list, sel: set) -> InlineKeyboardMarkup:
@@ -1083,7 +1083,7 @@ async def super_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("super_text", None)
     context.user_data.pop("super_iv", None)
     await q.edit_message_text(
-        "🚀 ابعت نص الإعلان اللي هينشر من الأرقام المختارة:",
+        "🚀 ابعت نص الإعلان اللي هينشر من الحسابات المختارة:",
         reply_markup=cancel_kb())
     return ASK_SUPER_AD
 
@@ -1165,15 +1165,17 @@ async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     had_normal = bc.running()
     bc.stop()
     sbc.start(phones, text, seconds, limit)
-    limit_txt = f"{sbc.daily_limit} لكل رقم" if sbc.daily_limit else "بدون حد"
+    limit_txt = f"{sbc.daily_limit} لكل حساب" if sbc.daily_limit else "بدون حد"
     extra = "\n⏹ وقفت النشر العادي عشان مفيش تكرار." if had_normal else ""
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏹ إيقاف السوبر", callback_data="s:stop")],
         [InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")],
     ])
     await update.message.reply_text(
-        f"🚀 السوبر شغال: {len(phones)} رقم — كل "
-        f"{format_duration_ar(sbc.interval_sec)} — الحد اليومي: {limit_txt}.{extra}",
+        f"🚀 السوبر شغال: {len(phones)} حساب — كل "
+        f"{format_duration_ar(sbc.interval_sec)} — الحد اليومي: {limit_txt}.{extra}\n"
+        "📋 هيوصلك تقرير منفصل لكل حساب: أسماء الجروبات اللي نشر فيها، "
+        "واللي فشل/محظور فيها.",
         reply_markup=kb)
     return ConversationHandler.END
 
