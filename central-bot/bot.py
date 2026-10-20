@@ -196,6 +196,14 @@ async def num_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    sm = context.bot_data["sm"]
+    old = context.user_data.pop("add_phone", "")
+    if old:
+        try:
+            await sm.cancel_login(old)
+        except Exception:
+            pass
+    context.user_data.pop("code_tries", None)
     await q.edit_message_text("📱 ابعت الرقم (+كود البلد):\nمثال: +201012345678",
                               reply_markup=cancel_kb())
     return ASK_PHONE
@@ -311,6 +319,30 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def reset_flow_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _owner_ok(update):
+        return
+    sm = context.bot_data.get("sm")
+    phone = context.user_data.pop("add_phone", "")
+    if phone and sm is not None:
+        try:
+            await sm.cancel_login(phone)
+        except Exception:
+            pass
+    for key in ("code_tries", "join_links_all", "collect_phone", "ad_text",
+                "post_iv", "post_phone", "post_targets", "post_sel",
+                "post_page"):
+        context.user_data.pop(key, None)
+    for conv in context.bot_data.get("convs", ()):
+        try:
+            key = conv._get_key(update)
+            states = getattr(conv, "_conversations", None)
+            if isinstance(states, dict):
+                states.pop(key, None)
+        except Exception:
+            pass
+
+
 def cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")]])
@@ -328,6 +360,8 @@ def get_join_limit(db) -> int:
 async def join_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    context.user_data.pop("join_links_all", None)
+    context.user_data.pop("join_items", None)
     limit = get_join_limit(context.bot_data["db"])
     await q.edit_message_text(
         f"🔗 ابعت اللينكات على رسالة أو أكتر، ولما تخلص دوس تم (الحد: {limit}):\n"
@@ -681,6 +715,9 @@ async def send_bg(bot, chat_id: int, text: str, kb=None, parse_mode=None) -> Non
 async def post_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    for key in ("ad_text", "post_iv", "post_phone", "post_targets",
+                "post_sel", "post_page"):
+        context.user_data.pop(key, None)
     await q.edit_message_text("📢 ابعت نص الإعلان (نص بس):", reply_markup=cancel_kb())
     return ASK_AD
 
@@ -777,7 +814,7 @@ async def group_select_job(context: ContextTypes.DEFAULT_TYPE, update,
                            minutes: int, edit: bool) -> None:
     sm = context.bot_data["sm"]
     try:
-        phone, client = await sm.ensure_active()
+        phone, client = await asyncio.wait_for(sm.ensure_active(), timeout=60)
         targets = await asyncio.wait_for(list_post_targets(client),
                                          timeout=300)
     except LoginError as e:
@@ -788,7 +825,8 @@ async def group_select_job(context: ContextTypes.DEFAULT_TYPE, update,
     except (asyncio.TimeoutError, TimeoutError):
         context.user_data.clear()
         await _edit_or_send(context, update, edit,
-                            "❌ النت بطيء وقايمة الشاتات مقفشت — جرب تاني.",
+                            "❌ الاتصال بالحساب اتأخر — لو فيه تسجيل رقم شغال "
+                            "استنى شوية وجرب تاني.",
                             menu_kb())
         return
     except Exception as e:
@@ -879,10 +917,17 @@ async def post_begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved_targets and sel:
             targets = [saved_targets[i] for i in sorted(sel)]
         else:
-            async with sm.temp_client(phone) as client:
-                targets = await list_post_targets(client)
+            async def _fetch_targets():
+                async with sm.temp_client(phone) as client:
+                    return await list_post_targets(client)
+
+            targets = await asyncio.wait_for(_fetch_targets(), timeout=300)
     except LoginError as e:
         await q.edit_message_text(f"❌ {e}", reply_markup=menu_kb())
+        return ConversationHandler.END
+    except (asyncio.TimeoutError, TimeoutError):
+        await q.edit_message_text("❌ النت بطيء — جرب تاني.",
+                                  reply_markup=menu_kb())
         return ConversationHandler.END
     if not targets:
         await q.edit_message_text("مفيش جروبات.", reply_markup=menu_kb())
@@ -923,6 +968,26 @@ async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(OWNER, msg)
     except Exception:
         pass
+
+
+async def stale_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try:
+        await q.answer()
+    except Exception:
+        pass
+    if not _owner_ok(update):
+        return
+    await reset_flow_state(update, context)
+    text = "⌛ الزرار ده انتهى — ابدأ من القايمة:"
+    try:
+        await q.edit_message_text(text, reply_markup=menu_kb())
+    except Exception:
+        try:
+            await context.bot.send_message(update.effective_chat.id, text,
+                                           reply_markup=menu_kb())
+        except Exception:
+            pass
 
 
 # ---------- app wiring ----------
@@ -968,6 +1033,7 @@ def build_app(cfg, sm) -> Application:
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
                    CommandHandler("cancel", cancel_conv)],
         per_message=False,
+        allow_reentry=True,
     )
     collect_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(collect_start, pattern=r"^m:collect$")],
@@ -976,6 +1042,7 @@ def build_app(cfg, sm) -> Application:
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
                    CommandHandler("cancel", cancel_conv)],
         per_message=False,
+        allow_reentry=True,
     )
     post_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(post_start, pattern=r"^m:post$")],
@@ -989,6 +1056,7 @@ def build_app(cfg, sm) -> Application:
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
                    CommandHandler("cancel", cancel_conv)],
         per_message=False,
+        allow_reentry=True,
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -1004,11 +1072,19 @@ def build_app(cfg, sm) -> Application:
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
                    CommandHandler("cancel", cancel_conv)],
         per_message=False,
+        allow_reentry=True,
     )
     app.add_handler(add_conv)
     app.add_handler(join_conv)
     app.add_handler(collect_conv)
     app.add_handler(post_conv)
+    app.bot_data["convs"] = [add_conv, join_conv, collect_conv, post_conv]
+    app.add_handler(CallbackQueryHandler(
+        reset_flow_state,
+        pattern=r"^(m:(menu|status|stop|watch|nums|post|join|collect)|n:(add|use|del))"),
+        group=-1)
+    app.add_handler(CommandHandler("start", reset_flow_state), group=-1)
+    app.add_handler(CommandHandler("cancel", reset_flow_state), group=-1)
     app.add_handler(CallbackQueryHandler(nums_menu, pattern=r"^m:nums$"))
     app.add_handler(CallbackQueryHandler(num_use, pattern=r"^n:use:"))
     app.add_handler(CallbackQueryHandler(num_del, pattern=r"^n:del:"))
@@ -1016,6 +1092,6 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(CallbackQueryHandler(join_noop, pattern=r"^j:noop$"))
     app.add_handler(CallbackQueryHandler(join_all, pattern=r"^j:all$"))
     app.add_handler(CallbackQueryHandler(post_stop, pattern=r"^p:stop$"))
-    app.add_handler(CallbackQueryHandler(post_toggle, pattern=r"^p:noop$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop|watch)$"))
+    app.add_handler(CallbackQueryHandler(stale_button))
     return app

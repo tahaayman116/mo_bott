@@ -193,3 +193,46 @@ def test_big_list_preview_and_manual_rows():
     assert rows[-2][0].callback_data == "j:all"  # confirm-all covers everything
     assert rows[0][0].callback_data == "j:one:0"
     assert rows[40][0].callback_data == "j:noop"
+
+
+def test_reset_flow_state_clears_pending_flow():
+    import asyncio
+    from types import SimpleNamespace
+    import bot
+
+    class FakeConv:
+        def __init__(self):
+            self._conversations = {("chat", "user"): ("x", 1)}
+
+        def _get_key(self, update):
+            return ("chat", "user")
+
+    class FakeSM:
+        def __init__(self):
+            self.cancelled = []
+
+        async def cancel_login(self, phone):
+            self.cancelled.append(phone)
+
+    sm = FakeSM()
+    conv = FakeConv()
+    user_data = {"add_phone": "+201000000000", "code_tries": 1,
+                 "ad_text": "ad", "post_targets": [1], "post_sel": {0},
+                 "join_links_all": ["x"], "join_items": [("keep",)]}
+    context = SimpleNamespace(user_data=user_data,
+                              bot_data={"sm": sm, "convs": [conv]})
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=1),
+        effective_chat=SimpleNamespace(id=2),
+    )
+    old = bot.OWNER
+    bot.OWNER = 1
+    try:
+        asyncio.run(bot.reset_flow_state(update, context))
+    finally:
+        bot.OWNER = old
+    assert sm.cancelled == ["+201000000000"]
+    assert conv._conversations == {}
+    assert "ad_text" not in user_data
+    assert "post_targets" not in user_data
+    assert user_data["join_items"] == [("keep",)]

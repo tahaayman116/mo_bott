@@ -84,7 +84,7 @@ class SessionManager:
                 self._pending.pop(phone, None)
             client = self._new_client(phone)
             try:
-                await client.connect()
+                await self._connect(client)
                 try:
                     sent = await client.send_code_request(phone)
                 except PhoneNumberInvalidError:
