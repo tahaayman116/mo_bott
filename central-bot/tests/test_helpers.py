@@ -69,9 +69,19 @@ def test_interval_keyboard():
     kb = interval_kb("j:iv")
     assert kb.inline_keyboard[0][0].callback_data == "j:ivs:10"
     assert kb.inline_keyboard[1][0].callback_data == "j:iv:1"
+    assert kb.inline_keyboard[1][1].callback_data == "j:iv:2"
     assert kb.inline_keyboard[-1][0].callback_data == "x:cancel"
     skb = interval_kb("s:iv")
     assert skb.inline_keyboard[0][2].callback_data == "s:ivs:30"
+    assert skb.inline_keyboard[1][1].callback_data == "s:iv:2"
+
+
+def test_post_interval_keyboard():
+    from bot import post_iv_kb
+    kb = post_iv_kb()
+    assert kb.inline_keyboard[0][0].callback_data == "p:iv:2"
+    assert kb.inline_keyboard[0][2].callback_data == "p:iv:10"
+    assert kb.inline_keyboard[-1][0].callback_data == "x:cancel"
 
 
 def test_super_accounts_keyboard():

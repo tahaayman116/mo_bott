@@ -367,6 +367,7 @@ def interval_kb(prefix: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton("20 ثانية", callback_data=f"{prefix}s:20"),
          InlineKeyboardButton("30 ثانية", callback_data=f"{prefix}s:30")],
         [InlineKeyboardButton("1 دقيقة", callback_data=f"{prefix}:1"),
+         InlineKeyboardButton("دقيقتين", callback_data=f"{prefix}:2"),
          InlineKeyboardButton("5 دقايق", callback_data=f"{prefix}:5")],
         [InlineKeyboardButton("10 دقايق", callback_data=f"{prefix}:10"),
          InlineKeyboardButton("30 دقيقة", callback_data=f"{prefix}:30")],
@@ -745,6 +746,17 @@ async def send_bg(bot, chat_id: int, text: str, kb=None, parse_mode=None) -> Non
 
 
 # ---------- broadcast flow ----------
+def post_iv_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("دقيقتين", callback_data="p:iv:2"),
+         InlineKeyboardButton("5 دقايق", callback_data="p:iv:5"),
+         InlineKeyboardButton("10 دقايق", callback_data="p:iv:10")],
+        [InlineKeyboardButton("15 دقيقة", callback_data="p:iv:15"),
+         InlineKeyboardButton("30 دقيقة", callback_data="p:iv:30")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
+    ])
+
+
 async def post_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -762,13 +774,7 @@ async def post_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "الإعلان قصير أوي — ابعت نص الإعلان الكامل (مش كلمة للتجربة).")
         return ASK_AD
     context.user_data["ad_text"] = text[:3000]
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("5 دقايق", callback_data="p:iv:5"),
-         InlineKeyboardButton("10 دقايق", callback_data="p:iv:10")],
-        [InlineKeyboardButton("15 دقيقة", callback_data="p:iv:15"),
-         InlineKeyboardButton("30 دقيقة", callback_data="p:iv:30")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
-    ])
+    kb = post_iv_kb()
     preview = text if len(text) <= 200 else text[:200] + "…"
     await update.message.reply_text(
         f"📢 إعلانك:\n{preview}\n\n⏱️ ينشر كل كام دقيقة؟\n(مثال: 5 = منشور كل 5 دقايق — أو ابعت رقم مخصص)",
