@@ -1106,7 +1106,7 @@ async def super_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     preview = text if len(text) <= 200 else text[:200] + "…"
     await update.message.reply_text(
         f"📢 إعلان السوبر:\n{preview}\n\n"
-        "⏱️ ينشر كل كام؟ (ثواني أو دقايق — أقل 10 ثواني)",
+        "⏱️ المدة الإجمالية للنشر؟ (ثواني أو دقايق — أقل 10 ثواني)",
         reply_markup=interval_kb("s:iv"))
     return ASK_SUPER_IV
 
@@ -1123,7 +1123,7 @@ async def super_iv_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seconds = int(data.rsplit(":", 1)[-1]) * 60
     context.user_data["super_iv"] = seconds
     await q.edit_message_text(
-        f"⏱️ كل {format_duration_ar(seconds)}.\n"
+        f"⏱️ المدة الإجمالية {format_duration_ar(seconds)}.\n"
         "اكتب الحد اليومي لكل رقم (عدد المنشورات) — 0 = بدون حد:",
         reply_markup=cancel_kb())
     return ASK_SUPER_LIMIT
@@ -1140,7 +1140,7 @@ async def super_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_SUPER_IV
     context.user_data["super_iv"] = seconds
     await update.message.reply_text(
-        f"⏱️ كل {format_duration_ar(seconds)}.\n"
+        f"⏱️ المدة الإجمالية {format_duration_ar(seconds)}.\n"
         "اكتب الحد اليومي لكل رقم (عدد المنشورات) — 0 = بدون حد:",
         reply_markup=cancel_kb())
     return ASK_SUPER_LIMIT
@@ -1178,8 +1178,8 @@ async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")],
     ])
     await update.message.reply_text(
-        f"🚀 السوبر شغال: {len(phones)} حساب — كل "
-        f"{format_duration_ar(sbc.interval_sec)} — الحد اليومي: {limit_txt}.{extra}\n"
+        f"🚀 السوبر شغال: {len(phones)} حساب — المدة الإجمالية لكل حساب "
+        f"{format_duration_ar(sbc.duration_sec)} — الحد اليومي: {limit_txt}.{extra}\n"
         "📋 هيوصلك تقرير منفصل لكل حساب: عدد النشر الناجح، "
         "وأسماء الجروبات اللي خد منها حظر/منع.",
         reply_markup=kb)

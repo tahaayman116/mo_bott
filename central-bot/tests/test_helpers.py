@@ -290,7 +290,8 @@ def test_super_worker_per_account_limit(tmp_path):
     async def main():
         w = SuperBroadcastWorker(db, FakeSM(), notify)
         w.start(["+20111", "+20222"], "ad", 10, 3)
-        w.interval_sec = 0.01
+        w.duration_sec = 0.03
+        w.min_post_gap_sec = 0.001
         await w._task
 
     asyncio.run(main())
@@ -304,6 +305,19 @@ def test_super_worker_per_account_limit(tmp_path):
     report = "\n".join(notes)
     assert "+20111-0" not in report
     assert "+20222-0" not in report
+
+
+def test_super_duration_is_total_per_account(tmp_path):
+    from broadcast_flow import SuperBroadcastWorker
+    w = SuperBroadcastWorker(tmp_path / "x.db", None, None)
+    w.duration_sec = 300
+    w.daily_limit = 20
+    assert w._post_delay(463, 0) == 15
+    assert w._post_delay(463, 10) == 30
+    assert w._post_delay(5, 0) == 60
+    w.daily_limit = 0
+    assert w._post_delay(2000, 0) == 10
+    assert w._post_delay(10, 0) == 30
 
 
 def test_super_report_counts_success_and_lists_blocked(tmp_path):
@@ -348,7 +362,8 @@ def test_super_report_counts_success_and_lists_blocked(tmp_path):
     async def main():
         w = SuperBroadcastWorker(db, FakeSM(), notify)
         w.start(["+20111"], "ad", 10, 0)
-        w.interval_sec = 0.01
+        w.duration_sec = 0.03
+        w.min_post_gap_sec = 0.001
         await w._task
 
     asyncio.run(main())

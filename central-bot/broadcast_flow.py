@@ -149,7 +149,11 @@ class BroadcastWorker:
 
 
 class SuperBroadcastWorker:
-    """Post the same ad from several accounts, each paced independently."""
+    """Post the same ad from several accounts, each paced independently.
+
+    The chosen duration is the total time for each account's remaining quota,
+    not a delay between every post.
+    """
 
     def __init__(self, db_path, sm, notify):
         self.db_path = db_path
@@ -159,18 +163,19 @@ class SuperBroadcastWorker:
         self._stop = asyncio.Event()
         self.phones: list[str] = []
         self.text = ""
-        self.interval_sec = 60
+        self.duration_sec = 60
         self.daily_limit = 0
+        self.min_post_gap_sec = 10
 
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, phones: list[str], text: str, interval_sec: int,
+    def start(self, phones: list[str], text: str, duration_sec: int,
               daily_limit: int) -> None:
         self.stop()
         self.phones = list(dict.fromkeys(phones))
         self.text = text
-        self.interval_sec = max(10, min(24 * 60 * 60, int(interval_sec)))
+        self.duration_sec = max(10, min(24 * 60 * 60, int(duration_sec)))
         self.daily_limit = max(0, int(daily_limit))
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run())
@@ -180,6 +185,16 @@ class SuperBroadcastWorker:
             self._stop.set()
             self._task.cancel()
         self._task = None
+
+    def _post_delay(self, total: int, sent: int) -> float:
+        if self.daily_limit:
+            planned = max(0, min(total, self.daily_limit - sent))
+        else:
+            planned = total
+        if planned <= 0:
+            return float(self.duration_sec)
+        return max(float(self.min_post_gap_sec),
+                   float(self.duration_sec) / planned)
 
     async def _run(self) -> None:
         results = await asyncio.gather(
@@ -216,6 +231,8 @@ class SuperBroadcastWorker:
                 targets = await asyncio.wait_for(
                     list_post_targets(client), timeout=300)
                 total = len(targets)
+                postable = sum(1 for _, can in targets if can)
+                delay = self._post_delay(postable, sent)
                 if not total:
                     note = "⚠️ مفيش شاتات متاحة للنشر."
                 for i, (ent, can_post) in enumerate(targets, 1):
@@ -251,9 +268,11 @@ class SuperBroadcastWorker:
                         database.counter_inc(self.db_path, "posts")
                         failed.append(f"{title} — {describe_send_error(e)}")
                     if i < total and not self._stop.is_set():
+                        if self.daily_limit and sent >= self.daily_limit:
+                            continue
                         try:
                             await asyncio.wait_for(
-                                self._stop.wait(), timeout=self.interval_sec)
+                                self._stop.wait(), timeout=delay)
                         except asyncio.TimeoutError:
                             pass
         except asyncio.CancelledError:
