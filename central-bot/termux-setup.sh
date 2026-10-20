@@ -186,7 +186,10 @@ else
   if bot_running; then
     say "البوت شغال ✅"
     # verify token + show bot username
-    if command -v curl >/dev/null 2>&1; then
+    if [ -z "${TOKEN:-}" ]; then
+      TOKEN=$(sed -n 's/^CONTROL_BOT_TOKEN=//p' .env 2>/dev/null | head -n 1)
+    fi
+    if [ -n "${TOKEN:-}" ] && command -v curl >/dev/null 2>&1; then
       uname=$(curl -s "https://api.telegram.org/bot$TOKEN/getMe" 2>/dev/null \
               | sed -n 's/.*"username":"\([^"]*\)".*/@\1/p')
       [ -n "$uname" ] && say "بوت التحكم: $uname  (أرسل /start لهذا البوت)"
