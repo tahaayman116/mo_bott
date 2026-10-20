@@ -295,14 +295,13 @@ def test_super_worker_per_account_limit(tmp_path):
         await w._task
 
     asyncio.run(main())
-    assert len(sent["+20111"]) == 3
-    assert len(sent["+20222"]) == 3
-    assert database.counter_get(db, "sent:+20111") == 3
-    assert database.counter_get(db, "sent:+20222") == 3
-    assert database.counter_get(db, "posts") == 6
-    assert any("one" in n and "تم النشر بنجاح: 3 من 5" in n for n in notes)
-    assert any("two" in n and "تم النشر بنجاح: 3 من 5" in n for n in notes)
+    assert len(sent["+20111"]) == 5
+    assert len(sent["+20222"]) == 5
+    assert database.counter_get(db, "sent:+20111") == 5
+    assert database.counter_get(db, "sent:+20222") == 5
+    assert database.counter_get(db, "posts") == 10
     report = "\n".join(notes)
+    assert report.count("5 \u0645\u0646 5.") == 2
     assert "+20111-0" not in report
     assert "+20222-0" not in report
 
@@ -311,13 +310,14 @@ def test_super_duration_is_total_per_account(tmp_path):
     from broadcast_flow import SuperBroadcastWorker
     w = SuperBroadcastWorker(tmp_path / "x.db", None, None)
     w.duration_sec = 300
-    w.daily_limit = 20
-    assert w._post_delay(463, 0) == 15
-    assert w._post_delay(463, 10) == 30
-    assert w._post_delay(5, 0) == 60
-    w.daily_limit = 0
-    assert w._post_delay(2000, 0) == 10
-    assert w._post_delay(10, 0) == 30
+    w.batch_size = 20
+    w.min_post_gap_sec = 10
+    assert w._batch_gap(463) == 15
+    assert w._batch_gap(5) == 60
+
+    w.batch_size = 0
+    assert w._batch_gap(10) == 30
+    assert w._batch_gap(2000) == 10
 
 
 def test_super_report_counts_success_and_lists_blocked(tmp_path):

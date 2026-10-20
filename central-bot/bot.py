@@ -1154,7 +1154,7 @@ async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "اكتب رقم صحيح من 0 لـ 100000 (0 = بدون حد).")
         return ASK_SUPER_LIMIT
-    limit = int(raw)
+    batch_size = int(raw)
     phones = sorted(context.user_data.get("super_accs", set()))
     text = context.user_data.get("super_text", "")
     seconds = context.user_data.get("super_iv", 60)
@@ -1170,18 +1170,19 @@ async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bc: BroadcastWorker = context.bot_data["bc"]
     had_normal = bc.running()
     bc.stop()
-    sbc.start(phones, text, seconds, limit)
-    limit_txt = f"{sbc.daily_limit} لكل حساب" if sbc.daily_limit else "بدون حد"
+    sbc.start(phones, text, seconds, batch_size)
+    batch_txt = (f"{sbc.batch_size} Ø¬Ø±ÙˆØ¨" if sbc.batch_size
+                 else "ÙƒÙ„ Ø§Ù„Ù…ØªØ¨Ù‚ÙŠ")
     extra = "\n⏹ وقفت النشر العادي عشان مفيش تكرار." if had_normal else ""
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏹ إيقاف السوبر", callback_data="s:stop")],
         [InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")],
     ])
     await update.message.reply_text(
-        f"🚀 السوبر شغال: {len(phones)} حساب — المدة الإجمالية لكل حساب "
-        f"{format_duration_ar(sbc.duration_sec)} — الحد اليومي: {limit_txt}.{extra}\n"
-        "📋 هيوصلك تقرير منفصل لكل حساب: عدد النشر الناجح، "
-        "وأسماء الجروبات اللي خد منها حظر/منع.",
+        f"ðŸš€ Ø§Ù„Ø³ÙˆØ¨Ø± Ø´ØºØ§Ù„: {len(phones)} Ø­Ø³Ø§Ø¨ â€” ÙƒÙ„ Ø¯ÙØ¹Ø©: {batch_txt} ÙÙŠ "
+        f"{format_duration_ar(sbc.duration_sec)}.{extra}\n"
+        "ðŸ“‹ Ù‡ÙŠÙˆØµÙ„Ùƒ ØªÙ‚Ø±ÙŠØ± final Ø´Ø§Ù…Ù„ ÙƒÙ„ Ø­Ø³Ø§Ø¨: Ø¹Ø¯Ø¯ Ø§Ù„Ù†Ø´Ø± Ø§Ù„Ù†Ø§Ø¬Ø­ØŒ "
+        "ÙˆØ£Ø³Ù…Ø§Ø¡ Ø§Ù„Ø¬Ø±ÙˆØ¨Ø§Øª Ø§Ù„Ù„ÙŠ Ø®Ø¯ Ù…Ù†Ù‡Ø§ Ø­Ø¸Ø±/Ù…Ù†Ø¹.",
         reply_markup=kb)
     return ConversationHandler.END
 
