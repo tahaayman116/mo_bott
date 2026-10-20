@@ -289,15 +289,14 @@ def test_super_worker_per_account_limit(tmp_path):
     assert database.counter_get(db, "sent:+20111") == 3
     assert database.counter_get(db, "sent:+20222") == 3
     assert database.counter_get(db, "posts") == 6
-    assert any("one" in n and "3✅" in n for n in notes)
-    assert any("two" in n and "3✅" in n for n in notes)
+    assert any("one" in n and "تم النشر بنجاح: 3 من 5" in n for n in notes)
+    assert any("two" in n and "تم النشر بنجاح: 3 من 5" in n for n in notes)
     report = "\n".join(notes)
-    assert "✅ نشر في (3)" in report
-    assert "+20111-0" in report
-    assert "+20222-0" in report
+    assert "+20111-0" not in report
+    assert "+20222-0" not in report
 
 
-def test_super_report_lists_posted_and_blocked(tmp_path):
+def test_super_report_counts_success_and_lists_blocked(tmp_path):
     import asyncio
     from types import SimpleNamespace
     from telethon.tl.types import Channel
@@ -344,9 +343,9 @@ def test_super_report_lists_posted_and_blocked(tmp_path):
 
     asyncio.run(main())
     report = "\n".join(notes)
-    assert "✅ نشر في (1)" in report
-    assert "• Good Group" in report
-    assert "🚫 فشل/محظور (1)" in report
+    assert "تم النشر بنجاح: 1 من 3" in report
+    assert "Good Group" not in report
+    assert "🚫 جروبات خد منها حظر/منع (1)" in report
     assert "• Banned Group — محظور من النشر" in report
     assert "⏭️ متخطى: 1" in report
 

@@ -202,12 +202,12 @@ class SuperBroadcastWorker:
         if self.daily_limit and sent >= self.daily_limit:
             await self._send_report(name, (
                 f"🏁 تقرير {name}:\n"
+                f"✅ تم النشر بنجاح: 0 من 0.\n"
                 f"⏭️ الحساب وصل للحد اليومي ({self.daily_limit}) — "
                 f"منشور النهاردة: {sent}."))
             return (phone, 0, 0, 0, "limit")
         ok = fail = skip = 0
         total = 0
-        posted: list[str] = []
         failed: list[str] = []
         note = ""
         status = "done"
@@ -237,7 +237,6 @@ class SuperBroadcastWorker:
                         await client.send_message(ent, self.text)
                         ok += 1
                         sent += 1
-                        posted.append(title)
                         database.counter_inc(self.db_path, f"sent:{phone}")
                         database.counter_inc(self.db_path, "posts")
                     except FloodWaitError as e:
@@ -265,7 +264,7 @@ class SuperBroadcastWorker:
             detail = f"{type(e).__name__}: {reason}" if reason else type(e).__name__
             note = f"❌ وقف بسبب {detail}"
         await self._send_report(
-            name, self._report(name, ok, fail, skip, total, posted, failed, note))
+            name, self._report(name, ok, fail, skip, total, failed, note))
         return (phone, ok, fail, skip, status)
 
     async def _send_report(self, name: str, text: str) -> None:
@@ -278,16 +277,13 @@ class SuperBroadcastWorker:
                 f"📄 تقرير {name} ({i}/{len(chunks)}):\n{chunk}")
 
     @staticmethod
-    def _report(name, ok, fail, skip, total, posted, failed, note="") -> str:
+    def _report(name, ok, fail, skip, total, failed, note="") -> str:
         lines = [
             f"🏁 تقرير {name}:",
-            f"{ok}✅ {fail}❌ {skip}⏭️ — محاولات: {ok + fail} من {total} شات.",
+            f"✅ تم النشر بنجاح: {ok} من {total}.",
         ]
-        if posted:
-            lines.append(f"\n✅ نشر في ({len(posted)}):")
-            lines.extend(f"• {t}" for t in posted)
         if failed:
-            lines.append(f"\n🚫 فشل/محظور ({len(failed)}):")
+            lines.append(f"\n🚫 جروبات خد منها حظر/منع ({len(failed)}):")
             lines.extend(f"• {t}" for t in failed)
         if skip:
             lines.append(f"\n⏭️ متخطى: {skip} (مش متاح للنشر).")
