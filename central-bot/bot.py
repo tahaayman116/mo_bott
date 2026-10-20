@@ -1347,8 +1347,8 @@ def build_app(cfg, sm) -> Application:
                              super_conv]
     app.add_handler(CallbackQueryHandler(
         reset_flow_state,
-        pattern=r"^(m:(menu|status|stop|watch|nums|post|join|collect|super)|n:(add|use|del)|s:stop)",
-        group=-1))
+        pattern=r"^(m:(menu|status|stop|watch|nums|post|join|collect|super)|n:(add|use|del)|s:stop)"),
+        group=-1)
     app.add_handler(CommandHandler("start", reset_flow_state), group=-1)
     app.add_handler(CommandHandler("cancel", reset_flow_state), group=-1)
     app.add_handler(CallbackQueryHandler(nums_menu, pattern=r"^m:nums$"))

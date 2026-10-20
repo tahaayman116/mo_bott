@@ -431,3 +431,22 @@ def test_reset_flow_state_clears_pending_flow():
     assert "super_iv" not in user_data
     assert "super_limit" not in user_data
     assert user_data["join_items"] == [("keep",)]
+
+
+def test_build_app_wires_all_handlers(tmp_path):
+    from types import SimpleNamespace
+    import bot
+
+    cfg = SimpleNamespace(
+        owner_id=1,
+        db_path=tmp_path / "bot.db",
+        post_daily_cap=100,
+        bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+    )
+    old = bot.OWNER
+    try:
+        app = bot.build_app(cfg, SimpleNamespace())
+    finally:
+        bot.OWNER = old
+    assert app.bot_data["superbc"] is not None
+    assert len(app.bot_data["convs"]) == 5
