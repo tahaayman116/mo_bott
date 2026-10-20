@@ -1,5 +1,7 @@
-from helpers import chunk_text, extract_links, normalize_phone, parse_interval_minutes
-from join_flow import classify_link
+from helpers import (chunk_text, extract_links, format_duration_ar,
+                     normalize_phone, parse_interval_minutes,
+                     parse_join_interval)
+from join_flow import _entity_link, classify_link
 
 
 def test_normalize_phone():
@@ -17,6 +19,73 @@ def test_parse_interval_minutes():
     assert parse_interval_minutes("0") is None
     assert parse_interval_minutes("2000") is None
     assert parse_interval_minutes("مفيش") is None
+
+
+def test_parse_join_interval():
+    assert parse_join_interval("10s") == 10
+    assert parse_join_interval("10 ثواني") == 10
+    assert parse_join_interval("30 ثانية") == 30
+    assert parse_join_interval("10 sec") == 10
+    assert parse_join_interval("5") == 300
+    assert parse_join_interval("5 دقايق") == 300
+    assert parse_join_interval("1") == 60
+    assert parse_join_interval("1440") == 86400
+    assert parse_join_interval("5s") is None
+    assert parse_join_interval("0") is None
+    assert parse_join_interval("1441") is None
+    assert parse_join_interval("86401s") is None
+    assert parse_join_interval("مفيش") is None
+
+
+def test_format_duration_ar():
+    assert format_duration_ar(10) == "10 ثانية"
+    assert format_duration_ar(60) == "دقيقة"
+    assert format_duration_ar(120) == "دقيقتين"
+    assert format_duration_ar(90) == "دقيقة و30 ثانية"
+    assert format_duration_ar(300) == "5 دقايق"
+    assert format_duration_ar(600) == "10 دقايق"
+    assert format_duration_ar(1800) == "30 دقيقة"
+    assert format_duration_ar(3600) == "ساعة"
+    assert format_duration_ar(5400) == "ساعة و30 دقيقة"
+    assert format_duration_ar(7200) == "ساعتين"
+    assert format_duration_ar(10800) == "3 ساعات"
+    assert format_duration_ar(86400) == "24 ساعة"
+
+
+def test_entity_link():
+    from types import SimpleNamespace
+    assert _entity_link(None) == ""
+    assert _entity_link(SimpleNamespace(username="")) == ""
+    assert _entity_link(SimpleNamespace(username="mygroup")) == "https://t.me/mygroup"
+    multi = SimpleNamespace(username=None, usernames=[
+        SimpleNamespace(username="first"), SimpleNamespace(username="second")])
+    assert _entity_link(multi) == "https://t.me/first"
+    str_names = SimpleNamespace(username=None, usernames=["plain"])
+    assert _entity_link(str_names) == "https://t.me/plain"
+
+
+def test_interval_keyboard():
+    from bot import interval_kb
+    kb = interval_kb("j:iv")
+    assert kb.inline_keyboard[0][0].callback_data == "j:ivs:10"
+    assert kb.inline_keyboard[1][0].callback_data == "j:iv:1"
+    assert kb.inline_keyboard[-1][0].callback_data == "x:cancel"
+    skb = interval_kb("s:iv")
+    assert skb.inline_keyboard[0][2].callback_data == "s:ivs:30"
+
+
+def test_super_accounts_keyboard():
+    from bot import super_accs_kb
+    accs = [{"phone": "+20111", "display_name": "one"},
+            {"phone": "+20222", "display_name": ""}]
+    kb = super_accs_kb(accs, {"+20111"})
+    assert kb.inline_keyboard[0][0].text.startswith("✅")
+    assert kb.inline_keyboard[1][0].text.startswith("⬜")
+    assert "one" in kb.inline_keyboard[0][0].text
+    assert "+20222" in kb.inline_keyboard[1][0].text
+    assert kb.inline_keyboard[0][0].callback_data == "s:acc:+20111"
+    assert kb.inline_keyboard[2][0].callback_data == "s:all"
+    assert kb.inline_keyboard[3][0].callback_data == "s:next"
 
 
 def test_extract_links():
@@ -102,6 +171,126 @@ def test_list_post_targets_includes_all():
     assert len(targets) == 5  # nothing hidden
     flags = [c for _, c in targets]
     assert flags == [True, True, True, True, False]
+
+
+def test_folder_verification_returns_direct_links(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from telethon.tl import types
+    from telethon.tl.functions.channels import GetFullChannelRequest
+    from telethon.tl.functions.chatlists import (
+        CheckChatlistInviteRequest,
+        JoinChatlistInviteRequest,
+    )
+    from telethon.tl.functions.messages import (
+        GetDialogFiltersRequest,
+        GetFullChatRequest,
+    )
+    import join_flow
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(join_flow.asyncio, "sleep", no_sleep)
+
+    pub = types.Channel(id=1, title="Public Group", photo=None, date=None,
+                        access_hash=11, username="public_group", megagroup=True)
+    priv = types.Chat(id=2, title="Private Group", photo=None,
+                      participants_count=5, date=None, version=1)
+    p1 = types.PeerChannel(1)
+    p2 = types.PeerChat(2)
+    invite = SimpleNamespace(peers=[p1, p2], chats=[pub, priv], users=[])
+    remaining = SimpleNamespace(peers=[p1, p2], chats=[pub, priv], users=[])
+
+    class FakeClient:
+        def __init__(self):
+            self.checks = 0
+
+        async def __call__(self, req):
+            if isinstance(req, CheckChatlistInviteRequest):
+                self.checks += 1
+                return invite if self.checks == 1 else remaining
+            if isinstance(req, JoinChatlistInviteRequest):
+                return None
+            if isinstance(req, GetDialogFiltersRequest):
+                return SimpleNamespace(filters=[])
+            if isinstance(req, GetFullChatRequest):
+                return SimpleNamespace(full_chat=SimpleNamespace(
+                    exported_invite=SimpleNamespace(
+                        link="https://t.me/+privInvite")))
+            if isinstance(req, GetFullChannelRequest):
+                raise AssertionError("public username should not need GetFull")
+            raise AssertionError(type(req))
+
+    res, manual = asyncio.run(
+        join_flow.attempt_join(FakeClient(), "folder", "ABC"))
+    assert "2" in res
+    assert len(manual) == 2
+    assert any("https://t.me/public_group" in m and "Public Group" in m
+               for m in manual)
+    assert any("https://t.me/+privInvite" in m and "Private Group" in m
+               for m in manual)
+    assert all("addlist" not in m for m in manual)
+
+
+def test_super_worker_per_account_limit(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from telethon.tl.types import Chat
+    import database
+    from broadcast_flow import SuperBroadcastWorker
+
+    db = tmp_path / "super.db"
+    database.init_db(db)
+    database.add_account(db, "+20111", "a.session", "one")
+    database.add_account(db, "+20222", "b.session", "two")
+    notes: list[str] = []
+    sent: dict[str, list[str]] = {}
+
+    class FakeClient:
+        def __init__(self, phone):
+            self.phone = phone
+
+        async def iter_dialogs(self):
+            for i in range(5):
+                chat = Chat(id=i + 1, title=f"{self.phone}-{i}", photo=None,
+                            participants_count=1, date=None, version=1)
+                yield SimpleNamespace(entity=chat)
+
+        async def send_message(self, ent, text):
+            sent.setdefault(self.phone, []).append(ent.title)
+
+    class FakeCtx:
+        def __init__(self, phone):
+            self.phone = phone
+
+        async def __aenter__(self):
+            return FakeClient(self.phone)
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeSM:
+        def temp_client(self, phone):
+            return FakeCtx(phone)
+
+    async def notify(text):
+        notes.append(text)
+
+    async def main():
+        w = SuperBroadcastWorker(db, FakeSM(), notify)
+        w.start(["+20111", "+20222"], "ad", 10, 3)
+        w.interval_sec = 0.01
+        await w._task
+
+    asyncio.run(main())
+    assert len(sent["+20111"]) == 3
+    assert len(sent["+20222"]) == 3
+    assert database.counter_get(db, "sent:+20111") == 3
+    assert database.counter_get(db, "sent:+20222") == 3
+    assert database.counter_get(db, "posts") == 6
+    assert any("one" in n and "3✅" in n for n in notes)
+    assert any("two" in n and "3✅" in n for n in notes)
 
 
 def test_describe_send_error():
@@ -218,7 +407,9 @@ def test_reset_flow_state_clears_pending_flow():
     conv = FakeConv()
     user_data = {"add_phone": "+201000000000", "code_tries": 1,
                  "ad_text": "ad", "post_targets": [1], "post_sel": {0},
-                 "join_links_all": ["x"], "join_items": [("keep",)]}
+                 "join_links_all": ["x"], "join_items": [("keep",)],
+                 "super_accs": {"+2011"}, "super_text": "ad",
+                 "super_iv": 10, "super_limit": 5}
     context = SimpleNamespace(user_data=user_data,
                               bot_data={"sm": sm, "convs": [conv]})
     update = SimpleNamespace(
@@ -235,4 +426,8 @@ def test_reset_flow_state_clears_pending_flow():
     assert conv._conversations == {}
     assert "ad_text" not in user_data
     assert "post_targets" not in user_data
+    assert "super_accs" not in user_data
+    assert "super_text" not in user_data
+    assert "super_iv" not in user_data
+    assert "super_limit" not in user_data
     assert user_data["join_items"] == [("keep",)]

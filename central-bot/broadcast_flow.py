@@ -8,6 +8,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import Channel, Chat
 
 import database
+from helpers import format_duration_ar
 
 
 def describe_send_error(e: Exception) -> str:
@@ -119,6 +120,7 @@ class BroadcastWorker:
             try:
                 await client.send_message(ent, text)
                 ok += 1
+                database.counter_inc(self.db_path, f"sent:{phone}")
                 results.append(f"{i}. ✅ {title}")
             except FloodWaitError as e:
                 database.update_broadcast(self.db_path, bid, done_ok=ok,
@@ -144,3 +146,126 @@ class BroadcastWorker:
         if results:
             report += "\n" + "\n".join(results[:12])
         await self._notify(report)
+
+
+class SuperBroadcastWorker:
+    """Post the same ad from several accounts, each paced independently."""
+
+    def __init__(self, db_path, sm, notify):
+        self.db_path = db_path
+        self._sm = sm
+        self._notify = notify
+        self._task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+        self.phones: list[str] = []
+        self.text = ""
+        self.interval_sec = 60
+        self.daily_limit = 0
+
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self, phones: list[str], text: str, interval_sec: int,
+              daily_limit: int) -> None:
+        self.stop()
+        self.phones = list(dict.fromkeys(phones))
+        self.text = text
+        self.interval_sec = max(10, min(24 * 60 * 60, int(interval_sec)))
+        self.daily_limit = max(0, int(daily_limit))
+        self._stop = asyncio.Event()
+        self._task = asyncio.create_task(self._run())
+
+    def stop(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._stop.set()
+            self._task.cancel()
+        self._task = None
+
+    async def _run(self) -> None:
+        limit_txt = f"{self.daily_limit} لكل رقم" if self.daily_limit else "بدون حد"
+        await self._notify(
+            f"🚀 السوبر بدأ: {len(self.phones)} رقم — كل "
+            f"{format_duration_ar(self.interval_sec)} — الحد اليومي: {limit_txt}.")
+        results = await asyncio.gather(
+            *(self._run_account(p) for p in self.phones), return_exceptions=True)
+        ok = fail = skip = 0
+        for r in results:
+            if isinstance(r, tuple) and len(r) == 5:
+                ok += r[1]
+                fail += r[2]
+                skip += r[3]
+            elif isinstance(r, Exception):
+                await self._notify(f"❌ حساب وقف بخطأ: {type(r).__name__}.")
+        head = "⏹ السوبر اتوقف" if self._stop.is_set() else "🏁 السوبر خلص"
+        await self._notify(f"{head}: {ok}✅ {fail}❌ {skip}⏭️.")
+
+    async def _run_account(self, phone: str) -> tuple:
+        acc = database.get_account(self.db_path, phone) or {}
+        name = acc.get("display_name") or phone
+        sent = database.counter_get(self.db_path, f"sent:{phone}")
+        if self.daily_limit and sent >= self.daily_limit:
+            await self._notify(
+                f"⏭️ {name}: وصل للحد اليومي ({self.daily_limit}) — تخطي.")
+            return (phone, 0, 0, 0, "limit")
+        ok = fail = skip = 0
+        failures: list[str] = []
+        total = 0
+        try:
+            async with self._sm.temp_client(phone) as client:
+                targets = await asyncio.wait_for(
+                    list_post_targets(client), timeout=300)
+                total = len(targets)
+                for i, (ent, can_post) in enumerate(targets, 1):
+                    if self._stop.is_set():
+                        break
+                    if not can_post:
+                        skip += 1
+                        continue
+                    if self.daily_limit and sent >= self.daily_limit:
+                        await self._notify(
+                            f"🛑 {name}: وصل للحد اليومي ({self.daily_limit}).")
+                        break
+                    title = (getattr(ent, "title", "") or "?")[:30]
+                    try:
+                        await client.send_message(ent, self.text)
+                        ok += 1
+                        sent += 1
+                        database.counter_inc(self.db_path, f"sent:{phone}")
+                        database.counter_inc(self.db_path, "posts")
+                    except FloodWaitError as e:
+                        fail += 1
+                        database.counter_inc(self.db_path, "posts")
+                        await self._notify(
+                            f"⏳ {name}: تليجرام طلب انتظار {e.seconds} ث — وقفت الرقم ده.")
+                        await self._notify(
+                            self._report(name, ok, fail, skip, total, failures, True))
+                        return (phone, ok, fail, skip, "flood")
+                    except Exception as e:
+                        fail += 1
+                        database.counter_inc(self.db_path, "posts")
+                        if len(failures) < 5:
+                            failures.append(f"{title}: {describe_send_error(e)}")
+                    if i < total and not self._stop.is_set():
+                        try:
+                            await asyncio.wait_for(
+                                self._stop.wait(), timeout=self.interval_sec)
+                        except asyncio.TimeoutError:
+                            pass
+                await self._notify(
+                    self._report(name, ok, fail, skip, total, failures))
+                return (phone, ok, fail, skip, "")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            reason = str(e).replace("\n", " ")[:120]
+            detail = f"{type(e).__name__}: {reason}" if reason else type(e).__name__
+            await self._notify(f"❌ {name}: وقف — {detail}")
+            return (phone, ok, fail, skip, "error")
+
+    @staticmethod
+    def _report(name, ok, fail, skip, total, failures, stopped=False) -> str:
+        head = "⏹" if stopped else "🏁"
+        text = f"{head} {name}: {ok}✅ {fail}❌ {skip}⏭️ من {total}."
+        if failures:
+            text += "\n" + "\n".join(failures)
+        return text

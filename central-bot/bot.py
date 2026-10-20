@@ -1,6 +1,6 @@
 """Central control bot (Bot API): inline buttons, owner-only.
 
-Menu: انضم | تجميع | نشر | الأرقام | حالة | إيقاف
+Menu: انضم | تجميع | نشر | سوبر | الأرقام | حالة | إيقاف
 Nobody except OWNER_ID gets any reply (silently ignored + logged).
 """
 from __future__ import annotations
@@ -21,9 +21,10 @@ from telegram.ext import (
 )
 
 import database
-from broadcast_flow import BroadcastWorker, list_post_targets
+from broadcast_flow import BroadcastWorker, SuperBroadcastWorker, list_post_targets
 from collect_flow import collect_dialogs, format_links_block, save_and_format
-from helpers import chunk_text, extract_links, normalize_phone, parse_interval_minutes
+from helpers import (chunk_text, extract_links, format_duration_ar,
+                     normalize_phone, parse_interval_minutes, parse_join_interval)
 from join_flow import (JOIN_LIMIT_DEFAULT, JOIN_LIMIT_MAX, MANUAL_BTNS_MAX,
                        PREVIEW_LIST_MAX, JoinQueue, attempt_join,
                        clamp_join_limit, classify_link, merge_links,
@@ -40,6 +41,7 @@ ASK_PHONE, ASK_CODE, ASK_PASSWORD = range(3)
 ASK_LINKS, ASK_JOIN_MODE, ASK_JOIN_IV = range(10, 13)
 ASK_COLLECT_PHONE = 20
 ASK_AD, ASK_POST_IV, ASK_POST_GROUPS = range(30, 33)
+ASK_SUPER_ACCS, ASK_SUPER_AD, ASK_SUPER_IV, ASK_SUPER_LIMIT = range(40, 44)
 
 OWNER = 0
 
@@ -55,6 +57,7 @@ def menu_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton("📋 تجميع", callback_data="m:collect")],
         [InlineKeyboardButton("📢 نشر إعلان", callback_data="m:post"),
          InlineKeyboardButton("📱 الأرقام", callback_data="m:nums")],
+        [InlineKeyboardButton("🚀 نشر سوبر", callback_data="m:super")],
         [InlineKeyboardButton("👁 مراقبة", callback_data="m:watch"),
          InlineKeyboardButton("📊 حالة", callback_data="m:status")],
         [InlineKeyboardButton("⏹ إيقاف الكل", callback_data="m:stop")],
@@ -95,6 +98,9 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "m:stop":
         context.bot_data["joinq"].stop()
         context.bot_data["bc"].stop()
+        sbc = context.bot_data.get("superbc")
+        if sbc:
+            sbc.stop()
         w = context.bot_data.get("watcher")
         if w:
             await w.set_enabled(False)
@@ -128,12 +134,18 @@ async def status_text(context) -> str:
     active = database.get_active_phone(db)
     joinq: JoinQueue = context.bot_data["joinq"]
     bc: BroadcastWorker = context.bot_data["bc"]
+    sbc: SuperBroadcastWorker | None = context.bot_data.get("superbc")
     w = context.bot_data.get("watcher")
     watch_state = "شغال" if (w and w.is_enabled()) else "واقف"
+    if sbc and sbc.running():
+        super_state = f"شغال ({len(sbc.phones)} أرقام)"
+    else:
+        super_state = "واقف"
     lines = ["📊 الحالة:", f"الأرقام: {len(accs)}",
              f"النشط: {active or 'مفيش'}",
              f"الانضمام التلقائي: {'شغال' if joinq.running() else 'واقف'}",
              f"النشر: {'شغال' if bc.running() else 'واقف'}",
+             f"السوبر: {super_state}",
              f"المراقبة: {watch_state}",
              f"انضمامات النهاردة: {database.counter_get(db, 'joins')}",
              f"منشورات النهاردة: {database.counter_get(db, 'posts')}"]
@@ -331,7 +343,8 @@ async def reset_flow_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     for key in ("code_tries", "join_links_all", "collect_phone", "ad_text",
                 "post_iv", "post_phone", "post_targets", "post_sel",
-                "post_page"):
+                "post_page", "super_accs", "super_text", "super_iv",
+                "super_limit"):
         context.user_data.pop(key, None)
     for conv in context.bot_data.get("convs", ()):
         try:
@@ -346,6 +359,19 @@ async def reset_flow_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")]])
+
+
+def interval_kb(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("10 ثواني", callback_data=f"{prefix}s:10"),
+         InlineKeyboardButton("20 ثانية", callback_data=f"{prefix}s:20"),
+         InlineKeyboardButton("30 ثانية", callback_data=f"{prefix}s:30")],
+        [InlineKeyboardButton("1 دقيقة", callback_data=f"{prefix}:1"),
+         InlineKeyboardButton("5 دقايق", callback_data=f"{prefix}:5")],
+        [InlineKeyboardButton("10 دقايق", callback_data=f"{prefix}:10"),
+         InlineKeyboardButton("30 دقيقة", callback_data=f"{prefix}:30")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
+    ])
 
 
 # ---------- join flow ----------
@@ -497,35 +523,37 @@ async def join_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # NOTE: keep join_items in user_data on purpose — j:one / j:all
         # use them after this conversation ends.
         return ConversationHandler.END
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1 دقيقة", callback_data="j:iv:1"),
-         InlineKeyboardButton("5 دقايق", callback_data="j:iv:5")],
-        [InlineKeyboardButton("10 دقايق", callback_data="j:iv:10"),
-         InlineKeyboardButton("30 دقيقة", callback_data="j:iv:30")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")],
-    ])
-    await q.edit_message_text("⏱️ الوقت بين كل انضمام والتاني؟\n(ابعت رقم مخصص بالدقايق)",
-                              reply_markup=kb)
+    await q.edit_message_text(
+        "⏱️ الوقت بين كل انضمام والتاني؟\n"
+        "(ابعت رقم مخصص بالدقايق، أو رقم + s للثواني — أقل 10 ثواني)",
+        reply_markup=interval_kb("j:iv"))
     return ASK_JOIN_IV
 
 
 async def join_iv_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    minutes = int((q.data or "").split("j:iv:")[-1])
-    await start_join_queue(update, context, minutes, edit=True)
-
-
-async def join_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    minutes = parse_interval_minutes(update.message.text or "")
-    if not minutes:
-        await update.message.reply_text("ابعت رقم من 1 لـ 1440.")
-        return ASK_JOIN_IV
-    await start_join_queue(update, context, minutes, edit=False)
+    data = q.data or ""
+    if data.startswith("j:ivs:"):
+        seconds = int(data.rsplit(":", 1)[-1])
+    else:
+        seconds = int(data.rsplit(":", 1)[-1]) * 60
+    await start_join_queue(update, context, seconds, edit=True)
     return ConversationHandler.END
 
 
-async def start_join_queue(update, context, minutes: int, edit: bool):
+async def join_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    seconds = parse_join_interval(update.message.text or "")
+    if not seconds:
+        await update.message.reply_text(
+            "ابعت رقم من 10 ثواني لـ 24 ساعة.\n"
+            "مثال: 30s أو 10 ثواني أو 5 (دقايق).")
+        return ASK_JOIN_IV
+    await start_join_queue(update, context, seconds, edit=False)
+    return ConversationHandler.END
+
+
+async def start_join_queue(update, context, seconds: int, edit: bool):
     sm = context.bot_data["sm"]
     joinq: JoinQueue = context.bot_data["joinq"]
     items = context.user_data.get("join_items", [])
@@ -540,8 +568,9 @@ async def start_join_queue(update, context, minutes: int, edit: bool):
             await update.message.reply_text(txt, reply_markup=menu_kb())
         return
     pairs = [(k, p) for _, k, p in items]
-    joinq.start(phone, pairs, minutes)
-    txt = f"⚡ التلقائي شغال: {len(pairs)} لينك كل {minutes} دقيقة."
+    joinq.start(phone, pairs, seconds)
+    txt = (f"⚡ التلقائي شغال: {len(pairs)} لينك كل "
+           f"{format_duration_ar(joinq.interval_sec)}.")
     if edit:
         await update.callback_query.edit_message_text(txt, reply_markup=back_kb())
     else:
@@ -571,10 +600,14 @@ async def join_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = f"مش قادر أوصل ({type(e).__name__})."
     database.counter_inc(context.bot_data["db"], "joins")
     await q.answer("✅ انضميت" if res == "done" else res, show_alert=False)
-    text = f"{url}\nالنتيجة: {'✅ انضميت' if res == 'done' else res}"
+    shown = "📁 فولدر" if kind == "folder" else url
+    text = f"{shown}\nالنتيجة: {'✅ انضميت' if res == 'done' else res}"
     if manual:
-        text += "\n📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(manual)
-    await q.edit_message_text(text, reply_markup=back_kb())
+        text += "\n📋 جروبات تحتاج انضمام يدوي:\n" + "\n".join(manual)
+    chunks = chunk_text(text, 4000)
+    await q.edit_message_text(chunks[0], reply_markup=back_kb())
+    for extra in chunks[1:]:
+        await send_bg(context.bot, update.effective_chat.id, extra, back_kb())
 
 
 async def join_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -617,9 +650,9 @@ async def join_all_job(bot_data: dict, bot, chat_id: int,
             await send_bg(bot, chat_id, f"⏳ {idx}/{n} خلصو ({ok} ✅)…")
     await send_bg(bot, chat_id, f"🏁 {ok}✅ من {n}.", back_kb())
     if manual_all:
-        await send_bg(bot, chat_id,
-                      "📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(manual_all[:30]),
-                      back_kb())
+        body = "📋 جروبات تحتاج انضمام يدوي:\n" + "\n".join(manual_all)
+        for chunk in chunk_text(body, 4000):
+            await send_bg(bot, chat_id, chunk, back_kb())
 
 
 # ---------- collect flow ----------
@@ -900,6 +933,13 @@ async def post_begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     sm = context.bot_data["sm"]
     bc: BroadcastWorker = context.bot_data["bc"]
+    sbc: SuperBroadcastWorker | None = context.bot_data.get("superbc")
+    if sbc and sbc.running():
+        context.user_data.clear()
+        await q.edit_message_text(
+            "⚠️ السوبر شغال — أوقفه الأول قبل النشر العادي.",
+            reply_markup=menu_kb())
+        return ConversationHandler.END
     text = context.user_data.get("ad_text", "")
     minutes = context.user_data.get("post_iv", 5)
     phone = context.user_data.get("post_phone", "")
@@ -947,6 +987,209 @@ async def post_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     context.bot_data["bc"].stop()
     await q.edit_message_text("⏹ وقفت النشر.", reply_markup=back_kb())
+
+
+# ---------- super broadcast flow ----------
+def super_accs_text(accs: list, sel: set) -> str:
+    return (f"🚀 السوبر — اختار الأرقام ({len(sel)} من {len(accs)}):\n"
+            "هينشر في كل الشاتات القابلة للنشر لكل رقم مختار.")
+
+
+def super_accs_kb(accs: list, sel: set) -> InlineKeyboardMarkup:
+    rows = []
+    for a in accs:
+        mark = "✅" if a["phone"] in sel else "⬜"
+        label = (a["display_name"] or a["phone"])[:40]
+        rows.append([InlineKeyboardButton(
+            f"{mark} {label}", callback_data=f"s:acc:{a['phone']}")])
+    rows.append([InlineKeyboardButton("✅ الكل", callback_data="s:all"),
+                 InlineKeyboardButton("⬜ مسح", callback_data="s:none")])
+    rows.append([InlineKeyboardButton("➡️ متابعة", callback_data="s:next"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="x:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def super_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _owner_ok(update):
+        return ConversationHandler.END
+    for key in ("super_accs", "super_text", "super_iv", "super_limit"):
+        context.user_data.pop(key, None)
+    sbc: SuperBroadcastWorker = context.bot_data["superbc"]
+    if sbc.running():
+        await q.edit_message_text(
+            "⚠️ السوبر شغال بالفعل — أوقفه الأول من ⏹ إيقاف الكل.",
+            reply_markup=menu_kb())
+        return ConversationHandler.END
+    accs = database.list_accounts(context.bot_data["db"])
+    if not accs:
+        await q.edit_message_text("ضيف رقم أولًا من 📱 الأرقام.",
+                                  reply_markup=menu_kb())
+        return ConversationHandler.END
+    sel = {a["phone"] for a in accs}
+    context.user_data["super_accs"] = sel
+    try:
+        await q.edit_message_text(super_accs_text(accs, sel),
+                                  reply_markup=super_accs_kb(accs, sel))
+    except Exception:
+        pass
+    return ASK_SUPER_ACCS
+
+
+async def super_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _owner_ok(update):
+        return
+    db = context.bot_data["db"]
+    accs = database.list_accounts(db)
+    valid = {a["phone"] for a in accs}
+    sel = context.user_data.get("super_accs")
+    if not isinstance(sel, set):
+        sel = set(valid)
+    sel &= valid
+    data = q.data or ""
+    if data == "s:all":
+        sel = set(valid)
+    elif data == "s:none":
+        sel = set()
+    elif data.startswith("s:acc:"):
+        phone = data.split("s:acc:", 1)[-1]
+        if phone in valid:
+            if phone in sel:
+                sel.discard(phone)
+            else:
+                sel.add(phone)
+    context.user_data["super_accs"] = sel
+    try:
+        await q.edit_message_text(super_accs_text(accs, sel),
+                                  reply_markup=super_accs_kb(accs, sel))
+    except Exception:
+        pass
+    return ASK_SUPER_ACCS
+
+
+async def super_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not _owner_ok(update):
+        await q.answer()
+        return
+    sel = context.user_data.get("super_accs", set())
+    if not sel:
+        await q.answer("اختار رقم واحد على الأقل.", show_alert=True)
+        return ASK_SUPER_ACCS
+    await q.answer()
+    context.user_data.pop("super_text", None)
+    context.user_data.pop("super_iv", None)
+    await q.edit_message_text(
+        "🚀 ابعت نص الإعلان اللي هينشر من الأرقام المختارة:",
+        reply_markup=cancel_kb())
+    return ASK_SUPER_AD
+
+
+async def super_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _owner_ok(update):
+        return
+    text = (update.message.text or "").strip()
+    if len(text) < 5:
+        await update.message.reply_text(
+            "الإعلان قصير أوي — ابعت نص الإعلان الكامل.")
+        return ASK_SUPER_AD
+    context.user_data["super_text"] = text[:3000]
+    preview = text if len(text) <= 200 else text[:200] + "…"
+    await update.message.reply_text(
+        f"📢 إعلان السوبر:\n{preview}\n\n"
+        "⏱️ ينشر كل كام؟ (ثواني أو دقايق — أقل 10 ثواني)",
+        reply_markup=interval_kb("s:iv"))
+    return ASK_SUPER_IV
+
+
+async def super_iv_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _owner_ok(update):
+        return
+    data = q.data or ""
+    if data.startswith("s:ivs:"):
+        seconds = int(data.rsplit(":", 1)[-1])
+    else:
+        seconds = int(data.rsplit(":", 1)[-1]) * 60
+    context.user_data["super_iv"] = seconds
+    await q.edit_message_text(
+        f"⏱️ كل {format_duration_ar(seconds)}.\n"
+        "اكتب الحد اليومي لكل رقم (عدد المنشورات) — 0 = بدون حد:",
+        reply_markup=cancel_kb())
+    return ASK_SUPER_LIMIT
+
+
+async def super_iv_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _owner_ok(update):
+        return
+    seconds = parse_join_interval(update.message.text or "")
+    if not seconds:
+        await update.message.reply_text(
+            "ابعت رقم من 10 ثواني لـ 24 ساعة.\n"
+            "مثال: 30s أو 10 ثواني أو 5 (دقايق).")
+        return ASK_SUPER_IV
+    context.user_data["super_iv"] = seconds
+    await update.message.reply_text(
+        f"⏱️ كل {format_duration_ar(seconds)}.\n"
+        "اكتب الحد اليومي لكل رقم (عدد المنشورات) — 0 = بدون حد:",
+        reply_markup=cancel_kb())
+    return ASK_SUPER_LIMIT
+
+
+async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _owner_ok(update):
+        return
+    raw = (update.message.text or "").strip()
+    if not raw.isdigit() or int(raw) > 100000:
+        await update.message.reply_text(
+            "اكتب رقم صحيح من 0 لـ 100000 (0 = بدون حد).")
+        return ASK_SUPER_LIMIT
+    limit = int(raw)
+    phones = sorted(context.user_data.get("super_accs", set()))
+    text = context.user_data.get("super_text", "")
+    seconds = context.user_data.get("super_iv", 60)
+    context.user_data.clear()
+    if not phones or not text:
+        await update.message.reply_text("ابدأ من الأول.", reply_markup=menu_kb())
+        return ConversationHandler.END
+    sbc: SuperBroadcastWorker = context.bot_data["superbc"]
+    if sbc.running():
+        await update.message.reply_text(
+            "السوبر شغال بالفعل — أوقفه الأول.", reply_markup=menu_kb())
+        return ConversationHandler.END
+    bc: BroadcastWorker = context.bot_data["bc"]
+    had_normal = bc.running()
+    bc.stop()
+    sbc.start(phones, text, seconds, limit)
+    limit_txt = f"{sbc.daily_limit} لكل رقم" if sbc.daily_limit else "بدون حد"
+    extra = "\n⏹ وقفت النشر العادي عشان مفيش تكرار." if had_normal else ""
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏹ إيقاف السوبر", callback_data="s:stop")],
+        [InlineKeyboardButton("🔙 القايمة", callback_data="m:menu")],
+    ])
+    await update.message.reply_text(
+        f"🚀 السوبر شغال: {len(phones)} رقم — كل "
+        f"{format_duration_ar(sbc.interval_sec)} — الحد اليومي: {limit_txt}.{extra}",
+        reply_markup=kb)
+    return ConversationHandler.END
+
+
+async def super_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _owner_ok(update):
+        return
+    sbc = context.bot_data.get("superbc")
+    if sbc:
+        sbc.stop()
+    try:
+        await q.edit_message_text("⏹ وقفت السوبر.", reply_markup=back_kb())
+    except Exception:
+        pass
 
 
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1018,6 +1261,7 @@ def build_app(cfg, sm) -> Application:
 
     app.bot_data["joinq"] = JoinQueue(cfg.db_path, _get_client, _notify)
     app.bot_data["bc"] = BroadcastWorker(cfg.db_path, _get_client, _notify)
+    app.bot_data["superbc"] = SuperBroadcastWorker(cfg.db_path, sm, _notify)
     watcher = LinkWatcher(_get_client, _notify, cfg.db_path)
     watcher._enabled = database.kv_get(cfg.db_path, "watch_enabled", "0") == "1"
     app.bot_data["watcher"] = watcher
@@ -1028,7 +1272,7 @@ def build_app(cfg, sm) -> Application:
                               CallbackQueryHandler(join_done, pattern=r"^j:done$"),
                               CallbackQueryHandler(join_lim, pattern=r"^j:lim(:\d+|keep)$")],
                 ASK_JOIN_MODE: [CallbackQueryHandler(join_mode, pattern=r"^j:(auto|manual)$")],
-                ASK_JOIN_IV: [CallbackQueryHandler(join_iv_btn, pattern=r"^j:iv:\d+$"),
+                ASK_JOIN_IV: [CallbackQueryHandler(join_iv_btn, pattern=r"^j:ivs?:\d+$"),
                               MessageHandler(filters.TEXT & ~filters.COMMAND, join_iv_msg)]},
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
                    CommandHandler("cancel", cancel_conv)],
@@ -1058,6 +1302,26 @@ def build_app(cfg, sm) -> Application:
         per_message=False,
         allow_reentry=True,
     )
+    super_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(super_start, pattern=r"^m:super$")],
+        states={
+            ASK_SUPER_ACCS: [
+                CallbackQueryHandler(super_toggle,
+                                     pattern=r"^s:(acc:.+|all|none)$"),
+                CallbackQueryHandler(super_next, pattern=r"^s:next$")],
+            ASK_SUPER_AD: [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                          super_ad)],
+            ASK_SUPER_IV: [
+                CallbackQueryHandler(super_iv_btn, pattern=r"^s:ivs?:\d+$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, super_iv_msg)],
+            ASK_SUPER_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                             super_limit_msg)],
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern=r"^x:cancel$"),
+                   CommandHandler("cancel", cancel_conv)],
+        per_message=False,
+        allow_reentry=True,
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel_conv))
@@ -1078,11 +1342,13 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(join_conv)
     app.add_handler(collect_conv)
     app.add_handler(post_conv)
-    app.bot_data["convs"] = [add_conv, join_conv, collect_conv, post_conv]
+    app.add_handler(super_conv)
+    app.bot_data["convs"] = [add_conv, join_conv, collect_conv, post_conv,
+                             super_conv]
     app.add_handler(CallbackQueryHandler(
         reset_flow_state,
-        pattern=r"^(m:(menu|status|stop|watch|nums|post|join|collect)|n:(add|use|del))"),
-        group=-1)
+        pattern=r"^(m:(menu|status|stop|watch|nums|post|join|collect|super)|n:(add|use|del)|s:stop)",
+        group=-1))
     app.add_handler(CommandHandler("start", reset_flow_state), group=-1)
     app.add_handler(CommandHandler("cancel", reset_flow_state), group=-1)
     app.add_handler(CallbackQueryHandler(nums_menu, pattern=r"^m:nums$"))
@@ -1092,6 +1358,7 @@ def build_app(cfg, sm) -> Application:
     app.add_handler(CallbackQueryHandler(join_noop, pattern=r"^j:noop$"))
     app.add_handler(CallbackQueryHandler(join_all, pattern=r"^j:all$"))
     app.add_handler(CallbackQueryHandler(post_stop, pattern=r"^p:stop$"))
+    app.add_handler(CallbackQueryHandler(super_stop, pattern=r"^s:stop$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^m:(menu|status|stop|watch)$"))
     app.add_handler(CallbackQueryHandler(stale_button))
     return app

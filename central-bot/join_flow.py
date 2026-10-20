@@ -1,7 +1,8 @@
 """Join logic for the active session: classify links, paced auto-join, manual join.
 
 Link kinds: public username (t.me/name), invite hash (t.me/+HASH or joinchat),
-folder (t.me/addlist/...) -> NOT joinable, must be opened by hand.
+folder (t.me/addlist/...) -> joined via chatlists, verification groups fall back
+to direct group links (never the folder link).
 """
 from __future__ import annotations
 
@@ -10,13 +11,16 @@ import re
 from urllib.parse import urlparse
 
 from telethon.errors import FloodWaitError, InviteRequestSentError, UserAlreadyParticipantError
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.functions.messages import (
     CheckChatInviteRequest,
+    GetFullChatRequest,
     ImportChatInviteRequest,
 )
 
 import database
+from helpers import (JOIN_MAX_INTERVAL_SEC, JOIN_MIN_INTERVAL_SEC,
+                     chunk_text, format_duration_ar)
 
 PUBLIC_RE = re.compile(r"^t\.me/([A-Za-z][A-Za-z0-9_]{3,31})$", re.IGNORECASE)
 
@@ -93,6 +97,47 @@ def _url_for(kind: str, payload: str) -> str:
     return payload
 
 
+def _entity_link(entity) -> str:
+    """Best-effort public direct link for a chat entity (no folder links)."""
+    if entity is None:
+        return ""
+    from telethon.tl.types import User
+    if isinstance(entity, User):
+        return ""
+    username = getattr(entity, "username", None)
+    if not username:
+        for u in (getattr(entity, "usernames", None) or []):
+            name = getattr(u, "username", None) or (u if isinstance(u, str) else None)
+            if name:
+                username = name
+                break
+    return f"https://t.me/{username}" if username else ""
+
+
+async def _direct_link(client, entity) -> str:
+    """Return a direct group/channel link; never returns an addlist folder link."""
+    link = _entity_link(entity)
+    if link:
+        return link
+    if entity is None:
+        return ""
+    try:
+        from telethon.tl import types
+        if isinstance(entity, types.Channel):
+            full = await asyncio.wait_for(
+                client(GetFullChannelRequest(entity)), timeout=15)
+        elif isinstance(entity, types.Chat):
+            full = await asyncio.wait_for(
+                client(GetFullChatRequest(entity.id)), timeout=15)
+        else:
+            return ""
+        full_chat = getattr(full, "full_chat", None)
+        invite = getattr(full_chat, "exported_invite", None)
+        return getattr(invite, "link", None) or ""
+    except Exception:
+        return ""
+
+
 def _title_text(title) -> str:
     if title is None:
         return ""
@@ -151,16 +196,6 @@ def _to_input_peers(missing, chats, users) -> list:
         else:
             out.append(peer)
     return out or list(missing or [])
-
-
-def _url_for(kind: str, payload: str) -> str:
-    if kind == "public":
-        return f"https://t.me/{payload}"
-    if kind == "invite":
-        return f"https://t.me/+{payload}"
-    if kind == "folder":
-        return f"https://t.me/addlist/{payload}"
-    return payload
 
 
 async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]:
@@ -254,34 +289,53 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
                 except Exception:
                     pass
             manual: list[str] = []
-            if joined > 0:
-                # Re-check to find chats that could not be joined (verification/etc).
-                try:
-                    inv2 = await client(functions.chatlists.CheckChatlistInviteRequest(payload))
-                    if isinstance(inv2, types.chatlists.ChatlistInviteAlready):
-                        remaining = list(getattr(inv2, "missing_peers", None) or [])
-                    else:
-                        remaining = list(getattr(inv2, "peers", None) or [])
-                    if remaining:
-                        chat_by_id = {getattr(c, "id", None): c for c in (getattr(inv, "chats", None) or [])}
-                        for peer in remaining:
-                            cid = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None) or getattr(peer, "user_id", None)
-                            c = chat_by_id.get(cid)
-                            title = _title_text(getattr(c, "title", None)) if c is not None else ""
-                            label = title if title else str(cid)
-                            manual.append(f"{url} — {label}")
-                except Exception:
-                    pass
+            # Re-check even when joined == 0: the caller still needs direct group
+            # links for anything that could not be joined automatically.
+            chat_by_id = {getattr(c, "id", None): c for c in (getattr(inv, "chats", None) or [])}
+            try:
+                inv2 = await asyncio.wait_for(
+                    client(functions.chatlists.CheckChatlistInviteRequest(payload)),
+                    timeout=20)
+                for c in (getattr(inv2, "chats", None) or []):
+                    chat_by_id[getattr(c, "id", None)] = c
+                if isinstance(inv2, types.chatlists.ChatlistInviteAlready):
+                    remaining = list(getattr(inv2, "missing_peers", None) or [])
+                else:
+                    remaining = list(getattr(inv2, "peers", None) or [])
+            except Exception:
+                remaining = []
+            lookups = 0
+            for peer in remaining:
+                cid = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None) or getattr(peer, "user_id", None)
+                c = chat_by_id.get(cid)
+                if c is None and lookups < 20:
+                    lookups += 1
+                    try:
+                        c = await asyncio.wait_for(client.get_entity(peer), timeout=8)
+                    except Exception:
+                        c = None
+                label = _title_text(getattr(c, "title", None)) if c is not None else ""
+                label = label or str(cid)
+                link = _entity_link(c)
+                if not link and c is not None and lookups < 20:
+                    lookups += 1
+                    link = await _direct_link(client, c)
+                entry = f"{link} — {label}" if link else f"{label} — مفيش لينك مباشر"
+                if entry not in manual:
+                    manual.append(entry)
             if joined == 0:
                 if "500" in last_err:
-                    return "وصلت للحد (500 جروب) — احذف بعض الجروبات أولاً.", [url]
-                msg = f"فشل ({last_err})." if last_err else "فشل."
-                return msg, []
+                    msg = "وصلت للحد (500 جروب) — احذف بعض الجروبات أولاً."
+                else:
+                    msg = f"فشل ({last_err})." if last_err else "فشل."
+                if manual:
+                    msg = f"{msg} {len(manual)} جروب محتاج انضمام يدوي."
+                return msg, manual
             msg = f"انضميت لـ {joined} جروب في الفولدر (من {total_missing})."
             if deleted:
                 msg = f"حذفت مجلد قديم ({deleted}) بدون جروباته، ثم {msg}"
             if manual:
-                msg += f" ({len(manual)} يحتاج تحقق)"
+                msg += f" ({len(manual)} محتاج انضمام يدوي)"
             return msg, manual
     except FloodWaitError as e:
         raise
@@ -291,7 +345,7 @@ async def attempt_join(client, kind: str, payload: str) -> tuple[str, list[str]]
 
 
 class JoinQueue:
-    """Paced auto-join worker: one attempt per interval, daily cap, flood-stop."""
+    """Paced auto-join worker: one attempt per interval, flood-stop."""
 
     def __init__(self, db_path, get_client, notify):
         self.db_path = db_path
@@ -300,7 +354,7 @@ class JoinQueue:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.items: list[tuple[str, str]] = []
-        self.interval_min = 5
+        self.interval_sec = 600
         self.phone = ""
         self._manual_links: list[str] = []
 
@@ -308,10 +362,11 @@ class JoinQueue:
         return self._task is not None and not self._task.done()
 
     def start(self, phone: str, items: list[tuple[str, str]],
-              interval_min: int) -> None:
+              interval_sec: int) -> None:
         self.stop()
         self.items = list(items)
-        self.interval_min = max(1, min(1440, interval_min))
+        self.interval_sec = max(JOIN_MIN_INTERVAL_SEC,
+                                min(JOIN_MAX_INTERVAL_SEC, int(interval_sec)))
         self.phone = phone
         self._manual_links = []
         self._stop = asyncio.Event()
@@ -339,7 +394,7 @@ class JoinQueue:
                 await self._notify(f"⚠️ الحساب يحتوي {n_groups} جروب/قناة (الحد ~500) — قد يفشل الانضمام.")
         except Exception:
             pass
-        await self._notify(f"▶️ بدأت: {total} لينك كل {self.interval_min} دقيقة.")
+        await self._notify(f"▶️ بدأت: {total} لينك كل {format_duration_ar(self.interval_sec)}.")
         results: list[str] = []
         for i, (kind, payload) in enumerate(self.items, 1):
             if self._stop.is_set():
@@ -375,7 +430,7 @@ class JoinQueue:
             if left > 0 and not self._stop.is_set():
                 try:
                     await asyncio.wait_for(self._stop.wait(),
-                                           timeout=self.interval_min * 60)
+                                           timeout=self.interval_sec)
                     break
                 except asyncio.TimeoutError:
                     pass
@@ -385,6 +440,8 @@ class JoinQueue:
         await self._notify(report)
         if self._manual_links:
             try:
-                await self._notify("📋 لينكات تحتاج انضمام يدوي:\n" + "\n".join(self._manual_links[:30]))
+                body = "📋 جروبات تحتاج انضمام يدوي:\n" + "\n".join(self._manual_links)
+                for chunk in chunk_text(body, 4000):
+                    await self._notify(chunk)
             except Exception:
                 pass
