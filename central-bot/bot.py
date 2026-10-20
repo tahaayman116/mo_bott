@@ -1174,8 +1174,8 @@ async def super_limit_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🚀 السوبر شغال: {len(phones)} حساب — كل "
         f"{format_duration_ar(sbc.interval_sec)} — الحد اليومي: {limit_txt}.{extra}\n"
-        "📋 هيوصلك تقرير منفصل لكل حساب: أسماء الجروبات اللي نشر فيها، "
-        "واللي فشل/محظور فيها.",
+        "📋 هيوصلك تقرير منفصل لكل حساب: عدد النشر الناجح، "
+        "وأسماء الجروبات اللي خد منها حظر/منع.",
         reply_markup=kb)
     return ConversationHandler.END
 
